@@ -35,6 +35,17 @@ target_include_directories(fm_platform
 )
 target_link_libraries(fm_platform PRIVATE fm_warnings)
 
+add_library(fm_protocol STATIC)
+if(WIN32)
+    target_sources(fm_protocol PRIVATE cpp/src/windows/UDPSocket.cpp)
+    target_compile_definitions(fm_protocol PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(fm_protocol PRIVATE ws2_32)
+else()
+    target_sources(fm_protocol PRIVATE cpp/src/posix/UDPSocket.cpp)
+endif()
+target_include_directories(fm_protocol PUBLIC cpp/include)
+target_link_libraries(fm_protocol PRIVATE fm_warnings)
+
 add_executable(FreeMonitorHost cpp/src/HostMain.cpp)
 target_link_libraries(FreeMonitorHost PRIVATE fm_platform fm_warnings)
 
@@ -53,11 +64,12 @@ if(FM_BUILD_TESTS)
             cpp/tests/StubCaptureSourceTests.cpp
             cpp/tests/StubEncoderTests.cpp
             cpp/tests/StubVirtualDisplayTests.cpp
+            cpp/tests/UDPSocketTests.cpp
     )
     target_include_directories(fm_tests PRIVATE cpp/src)
     add_library(fm_test_warnings INTERFACE)
     target_compile_options(fm_test_warnings INTERFACE $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-c2y-extensions>)
-    target_link_libraries(fm_tests PRIVATE fm_platform fm_warnings fm_test_warnings Catch2::Catch2WithMain)
+    target_link_libraries(fm_tests PRIVATE fm_platform fm_protocol fm_warnings fm_test_warnings Catch2::Catch2WithMain)
 
     enable_testing()
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
