@@ -1,0 +1,21 @@
+[project]
+name = "freemonitor-tools"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+
+[tool.ruff]                                                                     
+line-length = 120                                                               
+                                                                                  
+[tool.ruff.lint]                                                                
+select = ["E", "F", "W", "I", "B", "UP"]                                        
+                                                                                  
+[tool.pytest.ini_options]                                                       
+testpaths = ["tests"]                                                           
+python_files = ["*Tests.py"]  
