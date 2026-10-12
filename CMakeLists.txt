@@ -23,12 +23,29 @@ else()
     endif()
 endif()
 
+if(NOT WIN32)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
+    pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
+endif()
+
 add_library(fm_platform STATIC
+        cpp/src/FrameMailbox.cpp
         cpp/src/stub/StubCaptureSource.cpp
         cpp/src/stub/StubEncoder.cpp
         cpp/src/stub/StubVirtualDisplay.cpp
-        cpp/src/stub/StubBackends.cpp
 )
+if(WIN32)
+    target_sources(fm_platform PRIVATE cpp/src/stub/StubBackends.cpp)
+else()
+    target_sources(fm_platform PRIVATE
+            cpp/src/linux/LinuxBackends.cpp
+            cpp/src/linux/PipeWireCaptureSource.cpp
+            cpp/src/linux/PortalScreenCast.cpp
+            cpp/src/linux/RestoreTokenStore.cpp
+    )
+    target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD)
+endif()
 target_include_directories(fm_platform
         PUBLIC cpp/include
         PRIVATE cpp/src
@@ -65,7 +82,16 @@ if(FM_BUILD_TESTS)
             cpp/tests/StubEncoderTests.cpp
             cpp/tests/StubVirtualDisplayTests.cpp
             cpp/tests/UDPSocketTests.cpp
+            cpp/tests/FrameMailboxTests.cpp
     )
+    if(NOT WIN32)
+        target_sources(fm_tests PRIVATE
+                cpp/tests/RestoreTokenStoreTests.cpp
+                cpp/tests/PipeWireFormatTests.cpp
+                cpp/tests/PortalScreenCastTests.cpp
+        )
+        target_link_libraries(fm_tests PRIVATE PkgConfig::PIPEWIRE)
+    endif()
     target_include_directories(fm_tests PRIVATE cpp/src)
     add_library(fm_test_warnings INTERFACE)
     target_compile_options(fm_test_warnings INTERFACE $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-c2y-extensions>)
