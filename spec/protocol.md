@@ -51,9 +51,34 @@ The one exception to dropping silently: the host answers a `HELLO` whose `versio
 | `MAX_FRAGMENT_PAYLOAD` | `MAX_PACKET_SIZE` − 48 = 1352 | Frame data per `VIDEO_FRAGMENT` ([4.2](#42-fragment-size)). |
 | `MAX_SHAPE_PAYLOAD` | `MAX_PACKET_SIZE` − 40 = 1360 | Pixel data per `CURSOR_SHAPE` ([5.2](#52-cursor_shape)). |
 | `MAX_FRAME_SIZE` | 4,194,304 (4 MiB) | Largest video frame ([4.2](#42-fragment-size)). |
-| `FRAGMENT_TIMEOUT_MS` | 100 | How long an incomplete frame or cursor shape is kept without a new fragment ([4.5](#45-reassembly)). |
 | `HOST_PORT` | 50500 | Default UDP port of the host. |
 | `DISCOVERY_PORT` | 50501 | Fixed UDP port for discovery ([7.5](#75-discovery)). |
+
+Times, in milliseconds:
+
+| Name | Value | Meaning |
+|------|------:|---------|
+| `FRAGMENT_TIMEOUT_MS` | 100 | How long an incomplete frame or cursor shape is kept without a new fragment ([4.5](#45-reassembly)). |
+| `CURSOR_POS_MIN_INTERVAL_MS` | 4 | Shortest time between two `CURSOR_POS` packets ([5.1](#51-cursor_pos)). |
+| `CURSOR_POS_REPEAT_INTERVAL_MS` | 250 | Longest time between two `CURSOR_POS` packets, even if nothing changed ([5.1](#51-cursor_pos)). |
+| `RELIABLE_RESEND_INTERVAL_MS` | 100 | Resend interval of an unacknowledged reliable message ([6.2](#62-reliable-delivery)). |
+| `HELLO_RESEND_INTERVAL_MS` | 500 | Resend interval of `HELLO` before any session exists ([6.2](#62-reliable-delivery)). |
+| `HEARTBEAT_INTERVAL_MS` | 500 | Interval between `HEARTBEAT` packets ([6.3](#63-session)). |
+| `SESSION_TIMEOUT_MS` | 3000 | Time without a valid packet after which a session is lost ([6.3](#63-session)). |
+| `BYE_REPEAT_INTERVAL_MS` | 20 | Time between the copies of `BYE` ([6.3](#63-session)). |
+| `KEYFRAME_REQUEST_IGNORE_MS` | 100 | After sending a keyframe, the host may skip `KEYFRAME_REQUEST`s for this long ([6.4](#64-messages)). |
+| `KEYFRAME_REQUEST_REPEAT_INTERVAL_MS` | 200 | Repeat interval of `KEYFRAME_REQUEST` until a keyframe arrives ([6.4](#64-messages)). |
+| `SHAPE_REQUEST_REPEAT_INTERVAL_MS` | 500 | Repeat interval of `SHAPE_REQUEST` until the shape arrives ([6.4](#64-messages)). |
+| `STATS_INTERVAL_MS` | 1000 | Interval between `STATS` packets ([6.4](#64-messages)). |
+| `DEVELOPMENT_KEYFRAME_INTERVAL_MS` | 1000 | Keyframe interval in development mode ([6.6](#66-development-mode)). |
+
+Counts:
+
+| Name | Value | Meaning |
+|------|------:|---------|
+| `MAX_INCOMPLETE_FRAMES` | 4 | Incomplete frames a receiver should keep at most ([4.5](#45-reassembly)). |
+| `MIN_SHAPE_CACHE_SIZE` | 16 | Cursor shapes a receiver should cache at least ([5.2](#52-cursor_shape)). |
+| `BYE_REPEAT_COUNT` | 3 | How many times `BYE` is sent ([6.3](#63-session)). |
 
 ## 2. Common header
 
@@ -162,8 +187,8 @@ On top of the checks in [1.4](#14-invalid-packets), a receiver drops a `VIDEO_FR
 - `frameId` values are compared with serial number arithmetic ([2.1](#21-seq)).
 - The receiver never delivers a frame older than, or the same as, the last frame it delivered. Older fragments are dropped.
 - When a frame is delivered, all incomplete frames older than it are discarded.
-- Receivers should keep at most 4 incomplete frames. Because frames never exceed `MAX_FRAME_SIZE`, a receiver can preallocate its reassembly buffers once (4 × `MAX_FRAME_SIZE`).
-- If all 4 are in use when a fragment of a newer frame arrives, the oldest incomplete frame is discarded to make room. A fragment of a frame older than all 4 is dropped.
+- Receivers should keep at most `MAX_INCOMPLETE_FRAMES` incomplete frames. Because frames never exceed `MAX_FRAME_SIZE`, a receiver can preallocate its reassembly buffers once (`MAX_INCOMPLETE_FRAMES` × `MAX_FRAME_SIZE`).
+- If all `MAX_INCOMPLETE_FRAMES` are in use when a fragment of a newer frame arrives, the oldest incomplete frame is discarded to make room. A fragment of a frame older than all of them is dropped.
 - An incomplete frame is discarded when no new fragment of it has arrived for `FRAGMENT_TIMEOUT_MS`. A duplicate fragment does not count as new. The timeout measures progress, not age: a large frame that is still arriving is never discarded, however long it takes, while a frame that lost a fragment is discarded soon after its last fragment arrived.
 - A lost H.264 frame breaks the frames that reference it. The receiver recovers by requesting a keyframe ([6.4](#64-messages)).
 
@@ -192,8 +217,8 @@ Coordinates are in pixels of the video frame, with `(0, 0)` at its top-left corn
 Total size: 40 bytes. Informative Python `struct` format: `"!HBBIIIQIiiBBH"`.
 
 Sender:
-- Sends a `CURSOR_POS` packet whenever the position, shape or visibility changes, at most once per 4 ms.
-- Repeats the latest state at least every 250 ms even if nothing changed, so a lost packet is corrected.
+- Sends a `CURSOR_POS` packet whenever the position, shape or visibility changes, at most once per `CURSOR_POS_MIN_INTERVAL_MS`.
+- Repeats the latest state at least every `CURSOR_POS_REPEAT_INTERVAL_MS` even if nothing changed, so a lost packet is corrected.
 - Clears `VISIBLE` when the cursor is hidden or is on another monitor.
 
 Receiver:
@@ -235,7 +260,7 @@ Fragmentation:
 Receiver:
 - Drops a `CURSOR_SHAPE` packet that breaks the size, range or fragmentation rules above, or that disagrees with earlier fragments of the same `shapeId`.
 - Reassembles the image like a video frame. It discards an incomplete shape when no new fragment of it has arrived for `FRAGMENT_TIMEOUT_MS`, as for video ([4.5](#45-reassembly)).
-- Should cache at least 16 shapes by `shapeId`.
+- Should cache at least `MIN_SHAPE_CACHE_SIZE` shapes by `shapeId`.
 
 ## 6. Control messages
 
@@ -258,9 +283,9 @@ Each side numbers its own reliable messages: `1` for the first message of a sess
 
 Sender:
 - Has at most one unacknowledged reliable message at a time (stop-and-wait). Later reliable messages wait in a queue.
-- Resends the message every 100 ms until it receives an `ACK` with that `msgId`. A resent copy has the same `msgId` but a new `seq` and `timestampUs`.
+- Resends the message every `RELIABLE_RESEND_INTERVAL_MS` until it receives an `ACK` with that `msgId`. A resent copy has the same `msgId` but a new `seq` and `timestampUs`.
 - Keeps resending until the session times out ([6.3](#63-session), step 6). It does not give up earlier, so a short Wi-Fi stall does not end the session.
-- Exception: before any session exists, the tablet resends `HELLO` every 500 ms until it receives an `ACK` or a `REJECT`.
+- Exception: before any session exists, the tablet resends `HELLO` every `HELLO_RESEND_INTERVAL_MS` until it receives an `ACK` or a `REJECT`.
 
 Receiver:
 - Sends an `ACK` for **every** copy of a reliable message it receives, including duplicates, because an earlier `ACK` may have been lost.
@@ -277,9 +302,9 @@ A session is one connection between the host and one tablet. In version 1, the h
    - If its `sessionId` is the current one, it is a duplicate and the host only sends `ACK`.
 3. **Connected.** When the tablet receives `WELCOME` with its `sessionId`, the session is established. It acknowledges `WELCOME` and does not display H.264 video until the first keyframe.
 4. **Streaming.** The host starts streaming only after it receives the `ACK` for `WELCOME`, so no video arrives before the tablet is ready. It sends a keyframe first, then, if the session uses `CURSOR_OVERLAY`, the current cursor shape and `CURSOR_POS`.
-5. **Keep-alive.** Both sides send `HEARTBEAT` every 500 ms.
-6. **Timeout.** A side that has received no valid packet of the session for 3 s treats the session as lost. The host stops streaming. The tablet starts again from step 1 with a new `sessionId`.
-7. **End.** A side that closes the session sends `BYE` 3 times, 20 ms apart. The receiver ends the session at once. A tablet whose session was ended by `BYE` does **not** reconnect automatically. It reconnects only when the user asks, because the host ended the session on purpose (it shut down, or another tablet took over). Automatic reconnection is only for timeouts (step 6).
+5. **Keep-alive.** Both sides send `HEARTBEAT` every `HEARTBEAT_INTERVAL_MS`.
+6. **Timeout.** A side that has received no valid packet of the session for `SESSION_TIMEOUT_MS` treats the session as lost. The host stops streaming. The tablet starts again from step 1 with a new `sessionId`.
+7. **End.** A side that closes the session sends `BYE` `BYE_REPEAT_COUNT` times, `BYE_REPEAT_INTERVAL_MS` apart. The receiver ends the session at once. A tablet whose session was ended by `BYE` does **not** reconnect automatically. It reconnects only when the user asks, because the host ended the session on purpose (it shut down, or another tablet took over). Automatic reconnection is only for timeouts (step 6).
 
 **Identifying the peer.** A peer is identified by its `sessionId`, not by its address and port:
 - Each side drops packets whose `sessionId` is not the current session's. The one exception is that the host accepts `HELLO` with any `sessionId`.
@@ -334,9 +359,9 @@ On receiving a `HEARTBEAT` with a non-zero `echoTimestampUs`, a side computes th
 
 **`KEYFRAME_REQUEST` (0x24)**: tablet → host, unreliable. Total 32 bytes, with no body.
 
-The tablet sends it when it is decoding H.264 and loses a frame: it discarded an incomplete frame, saw a gap in delivered `frameId`s, or its decoder reported an error. The host makes its next frame a keyframe. It may skip requests that arrive within 100 ms of a keyframe it already sent.
+The tablet sends it when it is decoding H.264 and loses a frame: it discarded an incomplete frame, saw a gap in delivered `frameId`s, or its decoder reported an error. The host makes its next frame a keyframe. It may skip requests that arrive within `KEYFRAME_REQUEST_IGNORE_MS` of a keyframe it already sent.
 
-The request is not acknowledged: its answer is the keyframe. The tablet repeats it every 200 ms until a keyframe arrives, and sends no other `KEYFRAME_REQUEST` in between, even if more frames are lost or fail to decode in the meantime.
+The request is not acknowledged: its answer is the keyframe. The tablet repeats it every `KEYFRAME_REQUEST_REPEAT_INTERVAL_MS` until a keyframe arrives, and sends no other `KEYFRAME_REQUEST` in between, even if more frames are lost or fail to decode in the meantime.
 
 **`SHAPE_REQUEST` (0x25)**: tablet → host, unreliable. Total 36 bytes.
 
@@ -344,9 +369,9 @@ The request is not acknowledged: its answer is the keyframe. The tablet repeats 
 |-------:|-----------|------|-------------|
 | 32     | `shapeId` | u32  | Shape the tablet is missing. The host sends that `CURSOR_SHAPE` again. |
 
-The request is not acknowledged: its answer is the shape. The tablet repeats it every 500 ms until the shape arrives, and requests a given `shapeId` at most once per 500 ms, however many `CURSOR_POS` packets refer to it in the meantime.
+The request is not acknowledged: its answer is the shape. The tablet repeats it every `SHAPE_REQUEST_REPEAT_INTERVAL_MS` until the shape arrives, and requests a given `shapeId` at most once per `SHAPE_REQUEST_REPEAT_INTERVAL_MS`, however many `CURSOR_POS` packets refer to it in the meantime.
 
-**`STATS` (0x26)**: tablet → host, unreliable, every 1 s. Total 52 bytes. All counters count from the start of the session and wrap at 2^32.
+**`STATS` (0x26)**: tablet → host, unreliable, every `STATS_INTERVAL_MS`. Total 52 bytes. All counters count from the start of the session and wrap at 2^32.
 
 | Offset | Field             | Type | Description |
 |-------:|-------------------|------|-------------|
@@ -398,7 +423,7 @@ Until sessions are implemented, the host can run in **development mode**. It is 
 - It keeps one `seq` counter for that destination.
 - It sends no control messages and ignores any it receives.
 - The codec and size are set on the command line.
-- The receiver cannot send `KEYFRAME_REQUEST` or `SHAPE_REQUEST`, so the host sends a keyframe every 1 s on its own, and also the current cursor shape when the cursor overlay is on.
+- The receiver cannot send `KEYFRAME_REQUEST` or `SHAPE_REQUEST`, so the host sends a keyframe every `DEVELOPMENT_KEYFRAME_INTERVAL_MS` on its own, and also the current cursor shape when the cursor overlay is on.
 
 Development mode is off by default and must never be enabled by a release build. Receivers in development mode, such as the debug viewer, skip [6.3](#63-session) and accept packets with `sessionId` = `0` from any address.
 

@@ -18,4 +18,5 @@ select = ["E", "F", "W", "I", "B", "UP"]
                                                                                   
 [tool.pytest.ini_options]                                                       
 testpaths = ["tests"]                                                           
-python_files = ["*Tests.py"]  
+python_files = ["*Tests.py"]
+pythonpath = ["."]
