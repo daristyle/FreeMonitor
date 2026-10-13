@@ -1,6 +1,6 @@
 # FreeMonitor protocol
 
-Version 1 · Status: ready for review
+Version 1 · Status: approved
 
 This document is the contract between the host (C++), the tablet app (Kotlin and C++ through the NDK) and the Python tools. Every implementation must follow it byte for byte. The packet schema is generated from this spec, and the conformance tests check implementations against it.
 
@@ -36,7 +36,7 @@ A receiver silently drops a packet, without replying, when any of these is true:
 - `version` is not supported.
 - `type` is unknown.
 - Its length does not match what its type requires.
-- A reserved field or bit is not `0`.
+- A reserved field or bit is not `0`. The `features` field of `HELLO` and `WELCOME` is not a reserved field: receivers ignore unknown bits in it ([7.2](#72-feature-negotiation)).
 - `sessionId` is `0`, except in development mode ([6.6](#66-development-mode)).
 
 Dropping an invalid packet must never change the receiver's state.
@@ -51,6 +51,7 @@ The one exception to dropping silently: the host answers a `HELLO` whose `versio
 | `MAX_FRAGMENT_PAYLOAD` | `MAX_PACKET_SIZE` − 48 = 1352 | Frame data per `VIDEO_FRAGMENT` ([4.2](#42-fragment-size)). |
 | `MAX_SHAPE_PAYLOAD` | `MAX_PACKET_SIZE` − 40 = 1360 | Pixel data per `CURSOR_SHAPE` ([5.2](#52-cursor_shape)). |
 | `MAX_FRAME_SIZE` | 4,194,304 (4 MiB) | Largest video frame ([4.2](#42-fragment-size)). |
+| `FRAGMENT_TIMEOUT_MS` | 100 | How long an incomplete frame or cursor shape is kept without a new fragment ([4.5](#45-reassembly)). |
 | `HOST_PORT` | 50500 | Default UDP port of the host. |
 | `DISCOVERY_PORT` | 50501 | Fixed UDP port for discovery ([7.5](#75-discovery)). |
 
@@ -161,12 +162,19 @@ On top of the checks in [1.4](#14-invalid-packets), a receiver drops a `VIDEO_FR
 - `frameId` values are compared with serial number arithmetic ([2.1](#21-seq)).
 - The receiver never delivers a frame older than, or the same as, the last frame it delivered. Older fragments are dropped.
 - When a frame is delivered, all incomplete frames older than it are discarded.
-- Receivers should keep at most 4 incomplete frames, and discard each one 100 ms after its first fragment arrived. Because frames never exceed `MAX_FRAME_SIZE`, a receiver can preallocate its reassembly buffers once (4 × `MAX_FRAME_SIZE`).
+- Receivers should keep at most 4 incomplete frames. Because frames never exceed `MAX_FRAME_SIZE`, a receiver can preallocate its reassembly buffers once (4 × `MAX_FRAME_SIZE`).
+- If all 4 are in use when a fragment of a newer frame arrives, the oldest incomplete frame is discarded to make room. A fragment of a frame older than all 4 is dropped.
+- An incomplete frame is discarded when no new fragment of it has arrived for `FRAGMENT_TIMEOUT_MS`. A duplicate fragment does not count as new. The timeout measures progress, not age: a large frame that is still arriving is never discarded, however long it takes, while a frame that lost a fragment is discarded soon after its last fragment arrived.
 - A lost H.264 frame breaks the frames that reference it. The receiver recovers by requesting a keyframe ([6.4](#64-messages)).
 
 ## 5. Cursor packets
 
-The host captures video without the cursor and sends the cursor separately: its position as small `CURSOR_POS` packets, and its image as `CURSOR_SHAPE` packets that are sent only when the image changes. The tablet draws the cursor on top of the video. Position updates skip capture and encoding, so the cursor moves with less delay than the video.
+Who draws the cursor depends on the `CURSOR_OVERLAY` feature ([7.2](#72-feature-negotiation)):
+
+- **Without `CURSOR_OVERLAY`** (the default): the host draws the cursor into the video and sends no cursor packets. The tablet draws nothing extra. This always works, even when the host's capture cannot deliver the cursor separately.
+- **With `CURSOR_OVERLAY`:** the host captures video without the cursor and sends the cursor separately: its position as small `CURSOR_POS` packets, and its image as `CURSOR_SHAPE` packets that are sent only when the image changes. The tablet draws the cursor on top of the video. Position updates skip capture and encoding, so the cursor moves with less delay than the video.
+
+Cursor packets are valid only in a session that uses `CURSOR_OVERLAY`. Otherwise receivers drop them. So the cursor is never drawn twice, and never missing.
 
 Coordinates are in pixels of the video frame, with `(0, 0)` at its top-left corner.
 
@@ -226,7 +234,7 @@ Fragmentation:
 
 Receiver:
 - Drops a `CURSOR_SHAPE` packet that breaks the size, range or fragmentation rules above, or that disagrees with earlier fragments of the same `shapeId`.
-- Reassembles the image like a video frame. It should discard an incomplete shape 500 ms after its first fragment arrived.
+- Reassembles the image like a video frame. It discards an incomplete shape when no new fragment of it has arrived for `FRAGMENT_TIMEOUT_MS`, as for video ([4.5](#45-reassembly)).
 - Should cache at least 16 shapes by `shapeId`.
 
 ## 6. Control messages
@@ -268,14 +276,14 @@ A session is one connection between the host and one tablet. In version 1, the h
    - If its `sessionId` differs from the current session's, the host ends the current session, if any, by sending `BYE` to its tablet (step 7). Then it starts a new session with the new tablet and sends it `ACK` and `WELCOME`.
    - If its `sessionId` is the current one, it is a duplicate and the host only sends `ACK`.
 3. **Connected.** When the tablet receives `WELCOME` with its `sessionId`, the session is established. It acknowledges `WELCOME` and does not display H.264 video until the first keyframe.
-4. **Streaming.** The host starts streaming only after it receives the `ACK` for `WELCOME`, so no video arrives before the tablet is ready. It sends a keyframe first, then the current cursor shape and `CURSOR_POS`.
+4. **Streaming.** The host starts streaming only after it receives the `ACK` for `WELCOME`, so no video arrives before the tablet is ready. It sends a keyframe first, then, if the session uses `CURSOR_OVERLAY`, the current cursor shape and `CURSOR_POS`.
 5. **Keep-alive.** Both sides send `HEARTBEAT` every 500 ms.
 6. **Timeout.** A side that has received no valid packet of the session for 3 s treats the session as lost. The host stops streaming. The tablet starts again from step 1 with a new `sessionId`.
 7. **End.** A side that closes the session sends `BYE` 3 times, 20 ms apart. The receiver ends the session at once. A tablet whose session was ended by `BYE` does **not** reconnect automatically. It reconnects only when the user asks, because the host ended the session on purpose (it shut down, or another tablet took over). Automatic reconnection is only for timeouts (step 6).
 
 **Identifying the peer.** A peer is identified by its `sessionId`, not by its address and port:
 - Each side drops packets whose `sessionId` is not the current session's. The one exception is that the host accepts `HELLO` with any `sessionId`.
-- When a valid packet with the current `sessionId` arrives from a new address or port, the receiver sends to that address from then on. This keeps the session alive when the tablet's IP address changes, for example after a DHCP renewal or when it roams between Wi-Fi access points.
+- When a valid packet with the current `sessionId` arrives from a new address or port, and its `seq` is newer than every `seq` received so far in this session ([2.1](#21-seq)), the receiver sends to that address from then on. An older packet from another address, for example one delayed in the network while the tablet roamed, does not change the address; it is still processed as usual. This keeps the session alive when the tablet's IP address changes, for example after a DHCP renewal or when it roams between Wi-Fi access points.
 
 **New session, fresh state.** When a session starts, each side resets all the state it keeps about the peer: `seq` counters and tracking, loss counters, the last processed `msgId`, the reliable send queue, video reassembly ([4.5](#45-reassembly)), the last accepted `CURSOR_POS`, and the shape cache ([5.2](#52-cursor_shape)). Nothing carries over from an earlier session.
 
@@ -293,7 +301,7 @@ Offsets continue after the control header (offset 32). Every message has exactly
 | 34     | `height`    | u16  | Tablet screen height in pixels. |
 | 36     | `refreshHz` | u16  | Tablet screen refresh rate. |
 | 38     | `codecs`    | u8   | Supported codecs: bit 0 = JPEG, bit 1 = H.264. Bit 0 must always be set, so the host's CPU fallback (JPEG) always works. Other bits must be `0`. |
-| 39     | `reserved`  | u8   | Must be `0`. |
+| 39     | `features`  | u8   | Features the tablet supports; see [7.2](#72-feature-negotiation). |
 
 **`WELCOME` (0x21)**: host → tablet, reliable. Total 40 bytes.
 
@@ -303,7 +311,7 @@ Offsets continue after the control header (offset 32). Every message has exactly
 | 34     | `height`   | u16  | Stream height in pixels. Even. |
 | 36     | `fps`      | u16  | Target frame rate. |
 | 38     | `codec`    | u8   | Codec the host will send, as in [4.1](#41-fragment-header). It must be one the tablet listed. |
-| 39     | `reserved` | u8   | Must be `0`. |
+| 39     | `features` | u8   | Features the host will use, a subset of the tablet's `features`; see [7.2](#72-feature-negotiation). |
 
 The stream size should equal the size in `HELLO`, but the host may choose a different one. For example, it must round odd sizes to even ones, because H.264 requires even dimensions, and it may pick a smaller size to save bandwidth. If the stream size differs from its screen, the tablet scales the video to fit, and scales cursor coordinates and images by the same factor.
 
@@ -338,7 +346,7 @@ The request is not acknowledged: its answer is the keyframe. The tablet repeats 
 
 The request is not acknowledged: its answer is the shape. The tablet repeats it every 500 ms until the shape arrives, and requests a given `shapeId` at most once per 500 ms, however many `CURSOR_POS` packets refer to it in the meantime.
 
-**`STATS` (0x26)**: tablet → host, unreliable, every 1 s. Total 48 bytes. All counters count from the start of the session and wrap at 2^32.
+**`STATS` (0x26)**: tablet → host, unreliable, every 1 s. Total 52 bytes. All counters count from the start of the session and wrap at 2^32.
 
 | Offset | Field             | Type | Description |
 |-------:|-------------------|------|-------------|
@@ -346,6 +354,9 @@ The request is not acknowledged: its answer is the shape. The tablet repeats it 
 | 36     | `packetsLost`     | u32  | Packets missing, from gaps in `seq`. |
 | 40     | `framesCompleted` | u32  | Video frames fully reassembled. |
 | 44     | `framesDropped`   | u32  | Video frames discarded incomplete. |
+| 48     | `bytesReceived`   | u32  | UDP payload bytes of the valid packets received, of every type. |
+
+The host uses the difference between two consecutive `STATS`, computed modulo 2^32, as the throughput the tablet actually received, and compares it with what it sent to choose the encoder's bitrate.
 
 **`BYE` (0x27)**: both directions, unreliable. Total 32 bytes, with no body.
 
@@ -369,10 +380,12 @@ All other values are reserved. A tablet that receives an unknown `reason` treats
 
 The host sends at most one `REJECT` per `HELLO` it receives. A tablet that receives a `REJECT` matching its `HELLO`'s `sessionId` stops resending `HELLO` and shows the reason to the user.
 
-**Version stability.** So that a host and a tablet with different protocol versions can still tell each other that they are incompatible, these layouts are frozen and will never change in any version:
+**Version stability.** So that a host and a tablet with different protocol versions can still tell each other that they are incompatible, these are frozen and will never change in any version:
 
-- the common header ([2](#2-common-header)), which includes the `type` and `sessionId` of every `HELLO`;
+- the offsets, sizes and meanings of the common header fields `magic`, `version`, `type`, `sessionId`, `seq` and `timestampUs` ([2](#2-common-header)), which include the `type` and `sessionId` of every `HELLO`;
 - the whole `REJECT` packet.
+
+`headerReserved` is a reserved field like any other ([7.1](#71-rules-for-changing-the-protocol)): a later revision may give it a meaning, used only after the peers agreed on it through `features` ([7.2](#72-feature-negotiation)). `HELLO` and `REJECT` always carry `0` in it.
 
 A host that receives a `HELLO` with an unsupported `version` reads only its common header and answers with `REJECT` reason `1`. A tablet accepts `REJECT` regardless of its `version` field.
 
@@ -380,11 +393,12 @@ A host that receives a `HELLO` with an unsupported `version` reads only its comm
 
 Until sessions are implemented, the host can run in **development mode**. It is used for early development and by the debugging tools (debug viewer, test sender):
 
-- It streams `VIDEO_FRAGMENT` and cursor packets with `sessionId` = `0` to a fixed address and port given on the command line, with no session.
+- It streams `VIDEO_FRAGMENT` packets with `sessionId` = `0` to a fixed address and port given on the command line, with no session.
+- The cursor overlay is off unless it is switched on from the command line. When it is on, the host also sends cursor packets, as if `CURSOR_OVERLAY` were used; when it is off, the cursor is drawn into the video.
 - It keeps one `seq` counter for that destination.
 - It sends no control messages and ignores any it receives.
 - The codec and size are set on the command line.
-- The receiver cannot send `KEYFRAME_REQUEST` or `SHAPE_REQUEST`, so the host sends a keyframe and the current cursor shape every 1 s on its own.
+- The receiver cannot send `KEYFRAME_REQUEST` or `SHAPE_REQUEST`, so the host sends a keyframe every 1 s on its own, and also the current cursor shape when the cursor overlay is on.
 
 Development mode is off by default and must never be enabled by a release build. Receivers in development mode, such as the debug viewer, skip [6.3](#63-session) and accept packets with `sessionId` = `0` from any address.
 
@@ -393,16 +407,22 @@ Development mode is off by default and must never be enabled by a release build.
 ### 7.1 Rules for changing the protocol
 
 - **New packet types** may be added without changing `version`. Receivers that do not know a type drop it ([1.4](#14-invalid-packets)). So a sender uses a new type only after the peer has said it supports it ([7.2](#72-feature-negotiation)).
-- **Reserved fields and bits** must be `0` when sent, and receivers drop packets where they are not. A later revision may give them a meaning. A sender uses that meaning only with a peer that supports it.
+- **Reserved fields and bits** must be `0` when sent, and receivers drop packets where they are not. A later revision may give them a meaning. A sender uses that meaning only with a peer that supports it, which it learns through `features` ([7.2](#72-feature-negotiation)).
 - **Any other change** to an existing packet's layout or meaning requires a new `version`.
 
 ### 7.2 Feature negotiation
 
-The `reserved` byte at offset 39 of `HELLO` and `WELCOME` will become a `features` bitmask. The tablet lists the features it supports, and the host answers with the subset it will use. Planned bits:
+The `features` byte at offset 39 of `HELLO` and `WELCOME` lets a host and a tablet use optional features without a new protocol `version`:
 
-| Bit | Feature |
-|----:|---------|
-| 0   | Forward error correction ([7.3](#73-forward-error-correction)) |
+- In `HELLO`, the tablet sets a bit for every feature it supports.
+- In `WELCOME`, the host sets the bits of the features it will use. They must be a subset of the bits in `HELLO`.
+- A feature is used only when its bit is set in `WELCOME`.
+- Senders set bits that are not assigned yet to `0`. Receivers **ignore** bits they do not know, and never drop a packet because of them. So an older peer simply answers without the feature, and the session works without it.
+
+| Bit | Feature | Status |
+|----:|---------|--------|
+| 0   | `CURSOR_OVERLAY`: the cursor is sent as separate cursor packets instead of being drawn into the video ([5](#5-cursor-packets)) | Assigned in version 1 |
+| 1   | Forward error correction ([7.3](#73-forward-error-correction)) | Planned |
 
 ### 7.3 Forward error correction
 
