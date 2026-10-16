@@ -2,16 +2,12 @@
 
 #include "Error.hpp"
 #include "Frame.hpp"
+#include "Packets.hpp"
 
 #include <cstdint>
 #include <memory>
 
 namespace fm {
-    enum class Codec : std::uint8_t {
-        JPEG,
-        H264,
-    };
-
     struct EncoderConfig {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
