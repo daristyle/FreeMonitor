@@ -83,6 +83,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/StubVirtualDisplayTests.cpp
             cpp/tests/UDPSocketTests.cpp
             cpp/tests/FrameMailboxTests.cpp
+            cpp/tests/SerialNumberTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
