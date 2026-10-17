@@ -60,6 +60,7 @@ if(WIN32)
 else()
     target_sources(fm_protocol PRIVATE cpp/src/posix/UDPSocket.cpp)
 endif()
+target_sources(fm_protocol PRIVATE cpp/src/Fragmenter.cpp)
 target_include_directories(fm_protocol PUBLIC cpp/include)
 target_link_libraries(fm_protocol PRIVATE fm_warnings)
 
@@ -84,6 +85,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/UDPSocketTests.cpp
             cpp/tests/FrameMailboxTests.cpp
             cpp/tests/SerialNumberTests.cpp
+            cpp/tests/FragmenterTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
