@@ -44,6 +44,7 @@ class Constant:
     name: str
     typeName: str
     value: int
+    hex: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,11 +131,16 @@ def parseSchema(data: dict) -> Schema:
 
 
 def parseConstant(name: str, entry: dict) -> Constant:
-    checkKeys(name, entry, {"type", "value"})
+    checkKeys(name, entry, {"type", "value", "hex"})
     typeName = requireFieldType(name, requireKey(name, entry, "type"))
     value = requireKey(name, entry, "value")
     checkInRange(name, value, typeName)
-    return Constant(name, typeName, value)
+    useHex = entry.get("hex", False)
+    if not isinstance(useHex, bool):
+        raise SchemaError(f"{name}: 'hex' must be true or false, got {useHex!r}")
+    if useHex and FIELD_TYPES[typeName].minimum < 0:
+        raise SchemaError(f"{name}: 'hex' needs an unsigned type, got {typeName}")
+    return Constant(name, typeName, value, useHex)
 
 
 def parseNamedValues(name: str, entries: dict, typeName: str) -> NamedValues:
@@ -287,8 +293,18 @@ def structFormat(fields: list[Field]) -> str:
     return "!" + "".join(FIELD_TYPES[field.typeName].structCode for field in fields)
 
 
-def cppLiteral(value: int) -> str:
-    return f"{value}ULL" if value > 2**63 - 1 else str(value)
+def hexLiteral(constant: Constant) -> str:
+    return f"0x{constant.value:0{FIELD_TYPES[constant.typeName].size * 2}X}"
+
+
+def cppLiteral(constant: Constant) -> str:
+    if constant.hex:
+        return hexLiteral(constant)
+    return f"{constant.value}ULL" if constant.value > 2**63 - 1 else str(constant.value)
+
+
+def pythonLiteral(constant: Constant) -> str:
+    return hexLiteral(constant) if constant.hex else str(constant.value)
 
 
 def cppDefault(field: Field) -> str:
@@ -319,7 +335,7 @@ def generateCPP(schema: Schema) -> str:
     ]
     for constant in schema.constants:
         cppType = FIELD_TYPES[constant.typeName].cppType
-        lines.append(f"    constexpr {cppType} {constant.name} = {cppLiteral(constant.value)};")
+        lines.append(f"    constexpr {cppType} {constant.name} = {cppLiteral(constant)};")
     lines.append("")
 
     packetTypes = [(packet.name, packet.typeValue) for packet in schema.packets]
@@ -465,7 +481,7 @@ def generatePython(schema: Schema) -> str:
         "from typing import ClassVar",
         "",
     ]
-    lines += [f"{constant.name} = {constant.value}" for constant in schema.constants]
+    lines += [f"{constant.name} = {pythonLiteral(constant)}" for constant in schema.constants]
     lines += ["", ""]
 
     lines += pythonEnum(

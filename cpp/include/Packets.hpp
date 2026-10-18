@@ -7,7 +7,7 @@
 #include <type_traits>
 
 namespace fm {
-    constexpr std::uint16_t MAGIC = 17997;
+    constexpr std::uint16_t MAGIC = 0x464D;
     constexpr std::uint8_t PROTOCOL_VERSION = 1;
     constexpr std::uint32_t MAX_PACKET_SIZE = 1400;
     constexpr std::uint32_t MAX_FRAME_SIZE = 4194304;
