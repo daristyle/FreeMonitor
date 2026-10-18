@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag
 from typing import ClassVar
 
-MAGIC = 17997
+MAGIC = 0x464D
 PROTOCOL_VERSION = 1
 MAX_PACKET_SIZE = 1400
 MAX_FRAME_SIZE = 4194304

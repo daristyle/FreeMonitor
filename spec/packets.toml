@@ -1,5 +1,5 @@
 [constants]
-MAGIC = { type = "u16", value = 0x464D }
+MAGIC = { type = "u16", value = 0x464D, hex = true }
 PROTOCOL_VERSION = { type = "u8", value = 1 }
 MAX_PACKET_SIZE = { type = "u32", value = 1400 }
 MAX_FRAME_SIZE = { type = "u32", value = 4_194_304 }

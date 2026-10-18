@@ -199,3 +199,29 @@ def testUnknownKeyIsRejected(schemaData):
     schemaData["packets"]["ACK"]["fields"][0]["defualt"] = 1
     with pytest.raises(SchemaError, match="unknown keys"):
         parseSchema(schemaData)
+
+
+def testHexConstantIsPrintedInHex():
+    schema = loadSchema()
+    assert "constexpr std::uint16_t MAGIC = 0x464D;" in generateCPP(schema)
+    assert "\nMAGIC = 0x464D\n" in generatePython(schema)
+
+
+def testHexConstantIsPaddedToItsTypeWidth(schemaData):
+    schemaData["constants"]["HOST_PORT"]["hex"] = True
+    schemaData["constants"]["MAX_PACKET_SIZE"]["hex"] = True
+    schema = parseSchema(schemaData)
+    assert "constexpr std::uint16_t HOST_PORT = 0xC544;" in generateCPP(schema)
+    assert "\nMAX_PACKET_SIZE = 0x00000578\n" in generatePython(schema)
+
+
+def testHexMustBeABoolean(schemaData):
+    schemaData["constants"]["MAGIC"]["hex"] = "yes"
+    with pytest.raises(SchemaError, match="'hex' must be true or false"):
+        parseSchema(schemaData)
+
+
+def testHexNeedsAnUnsignedType(schemaData):
+    schemaData["constants"]["MAGIC"] = {"type": "i32", "value": 1, "hex": True}
+    with pytest.raises(SchemaError, match="'hex' needs an unsigned type"):
+        parseSchema(schemaData)
