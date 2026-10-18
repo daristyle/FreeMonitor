@@ -27,6 +27,7 @@ if(NOT WIN32)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
     pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
+    pkg_check_modules(TURBOJPEG REQUIRED IMPORTED_TARGET libturbojpeg)
 endif()
 
 add_library(fm_platform STATIC
@@ -40,12 +41,13 @@ if(WIN32)
     target_sources(fm_platform PRIVATE cpp/src/stub/StubBackends.cpp)
 else()
     target_sources(fm_platform PRIVATE
+            cpp/src/JPEGEncoder.cpp
             cpp/src/linux/LinuxBackends.cpp
             cpp/src/linux/PipeWireCaptureSource.cpp
             cpp/src/linux/PortalScreenCast.cpp
             cpp/src/linux/RestoreTokenStore.cpp
     )
-    target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD)
+    target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD PkgConfig::TURBOJPEG)
 endif()
 target_include_directories(fm_platform
         PUBLIC cpp/include
@@ -92,11 +94,12 @@ if(FM_BUILD_TESTS)
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
+                cpp/tests/JPEGEncoderTests.cpp
                 cpp/tests/RestoreTokenStoreTests.cpp
                 cpp/tests/PipeWireFormatTests.cpp
                 cpp/tests/PortalScreenCastTests.cpp
         )
-        target_link_libraries(fm_tests PRIVATE PkgConfig::PIPEWIRE)
+        target_link_libraries(fm_tests PRIVATE PkgConfig::PIPEWIRE PkgConfig::TURBOJPEG)
     endif()
     target_include_directories(fm_tests PRIVATE cpp/src)
     add_library(fm_test_warnings INTERFACE)
