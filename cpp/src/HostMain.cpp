@@ -1,24 +1,33 @@
 #include "CaptureSource.hpp"
 #include "Encoder.hpp"
+#include "HostOptions.hpp"
+#include "Session.hpp"
+#include "UDPSocket.hpp"
+#include "VideoSender.hpp"
 #include "VirtualDisplay.hpp"
 
 #include <algorithm>
 #include <atomic>
-#include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
 #include <print>
+#include <random>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
     using Clock = std::chrono::steady_clock;
 
     constexpr std::chrono::milliseconds CAPTURE_TIMEOUT{100};
     constexpr std::chrono::seconds REPORT_INTERVAL{1};
-    constexpr int DEFAULT_RUN_SECONDS = 10;
+    constexpr int SEND_BUFFER_SIZE = 4 * 1024 * 1024;
+    constexpr double BITS_PER_MEGABIT = 1'000'000.0;
+    constexpr double BYTES_PER_KILOBYTE = 1024.0;
 
     std::atomic<bool> stopRequested = false;
 
@@ -56,28 +65,72 @@ namespace {
         }
     };
 
-    std::optional<int> parseRunSeconds(int argumentCount, char** arguments) {
-        int runSeconds = DEFAULT_RUN_SECONDS;
-        for (int i = 1; i < argumentCount; ++i) {
-            const std::string_view argument = arguments[i];
-            if (argument != "--seconds" || i + 1 >= argumentCount) {
-                return std::nullopt;
-            }
-            const std::string_view value = arguments[++i];
-            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), runSeconds);
-            if (error != std::errc() || end != value.data() + value.size() || runSeconds < 0) {
-                return std::nullopt;
-            }
+    struct SizeStatistics {
+        std::size_t maximum = 0;
+        std::size_t total = 0;
+        std::uint64_t count = 0;
+
+        void add(std::size_t value) {
+            maximum = std::max(maximum, value);
+            total += value;
+            ++count;
         }
-        return runSeconds;
+
+        double averageKilobytes() const {
+            return count == 0 ? 0.0 : static_cast<double>(total) / static_cast<double>(count) / BYTES_PER_KILOBYTE;
+        }
+
+        double maximumKilobytes() const {
+            return static_cast<double>(maximum) / BYTES_PER_KILOBYTE;
+        }
+    };
+
+    void printUsage() {
+        if constexpr (fm::DEVELOPMENT_MODE_AVAILABLE) {
+            std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--destination IPv4:PORT]");
+            std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams JPEG in development mode.");
+        } else {
+            std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100]");
+            std::println(stderr, "  --seconds 0 runs until Ctrl+C.");
+        }
+    }
+
+    void printEndpoint(const fm::Endpoint& endpoint) {
+        std::println("{}.{}.{}.{}:{}", (endpoint.address >> 24) & 0xFF, (endpoint.address >> 16) & 0xFF,
+                     (endpoint.address >> 8) & 0xFF, endpoint.address & 0xFF, endpoint.port);
     }
 }
 
 int main(int argumentCount, char** arguments) {
-    const auto runSeconds = parseRunSeconds(argumentCount, arguments);
-    if (!runSeconds) {
-        std::println(stderr, "Usage: FreeMonitorHost [--seconds N]   (N = 0 runs until Ctrl+C)");
+    const std::vector<std::string_view> argumentList(arguments + 1, arguments + argumentCount);
+    const auto options = fm::parseHostOptions(argumentList, fm::DEVELOPMENT_MODE_AVAILABLE);
+    if (!options) {
+        std::println(stderr, "{}", options.error().message);
+        printUsage();
         return 2;
+    }
+
+    std::optional<fm::UDPSocket> udpSocket;
+    std::optional<fm::VideoSender> videoSender;
+    fm::Session session;
+    if (options->destination) {
+        auto opened = fm::UDPSocket::open(fm::Endpoint{fm::ANY_IP_ADDRESS, 0});
+        if (!opened) {
+            std::println(stderr, "Could not open the UDP socket: {}", opened.error().message);
+            return 1;
+        }
+        udpSocket.emplace(std::move(*opened));
+        const auto sendBufferSize = udpSocket->setSendBufferSize(SEND_BUFFER_SIZE);
+        if (!sendBufferSize || *sendBufferSize < SEND_BUFFER_SIZE) {
+            std::println(stderr, "Warning: the send buffer is smaller than {} bytes. Raise net.core.wmem_max.",
+                         SEND_BUFFER_SIZE);
+        }
+
+        std::random_device randomDevice;
+        session = fm::Session{.peer = *options->destination, .sessionId = 0, .nextSeq = randomDevice()};
+        videoSender.emplace(*udpSocket, randomDevice());
+        std::print("Development mode: streaming JPEG with sessionId 0 to ");
+        printEndpoint(*options->destination);
     }
 
     const fm::DisplayMode displayMode{
@@ -100,16 +153,24 @@ int main(int argumentCount, char** arguments) {
 
     auto encoder = fm::createEncoder(fm::Codec::JPEG);
     fm::EncoderConfig encoderConfig;
+    encoderConfig.jpegQuality = options->jpegQuality;
     bool encoderConfigured = false;
 
     const auto startTime = Clock::now();
-    const auto deadline = *runSeconds > 0 ? startTime + std::chrono::seconds(*runSeconds) : Clock::time_point::max();
+    const auto deadline =
+            options->runSeconds > 0 ? startTime + std::chrono::seconds(options->runSeconds) : Clock::time_point::max();
     auto periodStart = startTime;
     std::optional<Clock::time_point> previousCaptureTime;
     IntervalStatistics frameIntervals;
     IntervalStatistics captureDelays;
+    IntervalStatistics encodeTimes;
+    IntervalStatistics captureToSendTimes;
+    SizeStatistics encodedSizes;
     std::uint64_t periodFrames = 0;
     std::uint64_t encodeFailures = 0;
+    std::uint64_t periodPackets = 0;
+    std::uint64_t periodBytes = 0;
+    std::uint64_t sendFailures = 0;
     int exitCode = 0;
 
     fm::CapturedFrame capturedFrame;
@@ -135,11 +196,28 @@ int main(int argumentCount, char** arguments) {
                 encoderConfig.inputFormat = capturedFrame.format;
                 encoderConfigured = encoder->configure(encoderConfig).has_value();
             }
-            if (!encoderConfigured || encoder->encode(capturedFrame, encodedFrame) != fm::EncodeStatus::FRAME_ENCODED) {
-                ++encodeFailures;
-            }
+            const auto encodeStart = Clock::now();
+            const bool encoded = encoderConfigured &&
+                                 encoder->encode(capturedFrame, encodedFrame) == fm::EncodeStatus::FRAME_ENCODED;
             captureSource->releaseFrame();
             ++periodFrames;
+
+            if (!encoded) {
+                ++encodeFailures;
+            } else {
+                encodeTimes.add(Clock::now() - encodeStart);
+                encodedSizes.add(encodedFrame.data.size());
+                if (videoSender) {
+                    const auto sendResult = videoSender->send(encodedFrame, fm::Codec::JPEG, session);
+                    periodPackets += sendResult.packetsSent;
+                    periodBytes += sendResult.bytesSent;
+                    if (sendResult.status == fm::FrameSendStatus::FRAME_SENT) {
+                        captureToSendTimes.add(Clock::now() - encodedFrame.captureTime);
+                    } else {
+                        ++sendFailures;
+                    }
+                }
+            }
         }
 
         const auto now = Clock::now();
@@ -152,10 +230,26 @@ int main(int argumentCount, char** arguments) {
                          frameIntervals.maximumMilliseconds(), captureDelays.averageMilliseconds(),
                          captureDelays.maximumMilliseconds(), encoderConfig.width, encoderConfig.height,
                          encodeFailures);
+            std::println("     | encode avg {:6.2f} max {:6.2f} ms | JPEG avg {:7.1f} max {:7.1f} KB",
+                         encodeTimes.averageMilliseconds(), encodeTimes.maximumMilliseconds(),
+                         encodedSizes.averageKilobytes(), encodedSizes.maximumKilobytes());
+            if (videoSender) {
+                std::println("     | send {:7.1f} Mbit/s {:6} packets/s | capture to send avg {:6.2f} max {:6.2f} ms | "
+                             "send failures {}",
+                             static_cast<double>(periodBytes) * 8.0 / periodSeconds / BITS_PER_MEGABIT,
+                             static_cast<int>(static_cast<double>(periodPackets) / periodSeconds + 0.5),
+                             captureToSendTimes.averageMilliseconds(), captureToSendTimes.maximumMilliseconds(),
+                             sendFailures);
+            }
             periodStart = now;
             periodFrames = 0;
+            periodPackets = 0;
+            periodBytes = 0;
             frameIntervals = {};
             captureDelays = {};
+            encodeTimes = {};
+            captureToSendTimes = {};
+            encodedSizes = {};
         }
     }
 

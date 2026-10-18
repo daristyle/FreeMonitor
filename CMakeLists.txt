@@ -67,8 +67,15 @@ target_sources(fm_protocol PRIVATE cpp/src/Fragmenter.cpp cpp/src/Reassembler.cp
 target_include_directories(fm_protocol PUBLIC cpp/include)
 target_link_libraries(fm_protocol PRIVATE fm_warnings)
 
+add_library(fm_host STATIC cpp/src/HostOptions.cpp)
+target_include_directories(fm_host
+        PUBLIC cpp/include cpp/src
+)
+target_compile_definitions(fm_host PUBLIC FM_DEVELOPMENT_MODE=$<IF:$<CONFIG:Release>,0,1>)
+target_link_libraries(fm_host PRIVATE fm_warnings)
+
 add_executable(FreeMonitorHost cpp/src/HostMain.cpp)
-target_link_libraries(FreeMonitorHost PRIVATE fm_platform fm_warnings)
+target_link_libraries(FreeMonitorHost PRIVATE fm_host fm_platform fm_protocol fm_warnings)
 
 if(FM_BUILD_TESTS)
     include(FetchContent)
@@ -92,6 +99,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/ReassemblerTests.cpp
             cpp/tests/PacketsTests.cpp
             cpp/tests/VideoSenderTests.cpp
+            cpp/tests/HostOptionsTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
@@ -105,7 +113,7 @@ if(FM_BUILD_TESTS)
     target_include_directories(fm_tests PRIVATE cpp/src)
     add_library(fm_test_warnings INTERFACE)
     target_compile_options(fm_test_warnings INTERFACE $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-c2y-extensions>)
-    target_link_libraries(fm_tests PRIVATE fm_platform fm_protocol fm_warnings fm_test_warnings Catch2::Catch2WithMain)
+    target_link_libraries(fm_tests PRIVATE fm_host fm_platform fm_protocol fm_warnings fm_test_warnings Catch2::Catch2WithMain)
 
     enable_testing()
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
