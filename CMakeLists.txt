@@ -88,6 +88,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/SerialNumberTests.cpp
             cpp/tests/FragmenterTests.cpp
             cpp/tests/ReassemblerTests.cpp
+            cpp/tests/PacketsTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
