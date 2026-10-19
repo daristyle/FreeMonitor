@@ -1,3 +1,4 @@
+#include "ScopedEnvironment.hpp"
 #include "linux/RestoreTokenStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -34,35 +35,6 @@ namespace {
         const std::filesystem::path& path() const {
             return directoryPath;
         }
-    };
-
-    class ScopedEnvironment {
-    private:
-        std::string name;
-        std::optional<std::string> previous;
-
-    public:
-        ScopedEnvironment(std::string name, const char* value) : name(std::move(name)) {
-            if (const char* current = std::getenv(this->name.c_str()); current != nullptr) {
-                previous = current;
-            }
-            if (value != nullptr) {
-                ::setenv(this->name.c_str(), value, 1);
-            } else {
-                ::unsetenv(this->name.c_str());
-            }
-        }
-
-        ~ScopedEnvironment() {
-            if (previous) {
-                ::setenv(name.c_str(), previous->c_str(), 1);
-            } else {
-                ::unsetenv(name.c_str());
-            }
-        }
-
-        ScopedEnvironment(const ScopedEnvironment&) = delete;
-        ScopedEnvironment& operator=(const ScopedEnvironment&) = delete;
     };
 }
 
@@ -145,27 +117,44 @@ TEST_CASE("save fails when the directory cannot be created") {
 TEST_CASE("defaultPath follows XDG_STATE_HOME, then HOME") {
     SECTION("XDG_STATE_HOME set") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", "/tmp/state-home");
-        const auto path = fm::RestoreTokenStore::defaultPath();
+        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
         REQUIRE(path);
-        CHECK(*path == "/tmp/state-home/freemonitor/restore-token");
+        CHECK(*path == "/tmp/state-home/freemonitor/restore-token-FREEMONITOR-1");
     }
     SECTION("only HOME set") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", nullptr);
         const ScopedEnvironment home("HOME", "/home/someone");
-        const auto path = fm::RestoreTokenStore::defaultPath();
+        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
         REQUIRE(path);
-        CHECK(*path == "/home/someone/.local/state/freemonitor/restore-token");
+        CHECK(*path == "/home/someone/.local/state/freemonitor/restore-token-FREEMONITOR-1");
     }
     SECTION("relative XDG_STATE_HOME is ignored, as the XDG spec requires") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", "relative/path");
         const ScopedEnvironment home("HOME", "/home/someone");
-        const auto path = fm::RestoreTokenStore::defaultPath();
+        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
         REQUIRE(path);
-        CHECK(*path == "/home/someone/.local/state/freemonitor/restore-token");
+        CHECK(*path == "/home/someone/.local/state/freemonitor/restore-token-FREEMONITOR-1");
     }
     SECTION("neither set") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", nullptr);
         const ScopedEnvironment home("HOME", nullptr);
-        CHECK_FALSE(fm::RestoreTokenStore::defaultPath());
+        CHECK_FALSE(fm::RestoreTokenStore::defaultPath("FREEMONITOR-1"));
+    }
+}
+
+TEST_CASE("defaultPath keeps one token per output and rejects names that are not plain file names") {
+    const ScopedEnvironment stateHome("XDG_STATE_HOME", "/tmp/state-home");
+    const auto first = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
+    const auto second = fm::RestoreTokenStore::defaultPath("eDP_1");
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(*first != *second);
+    CHECK(*second == "/tmp/state-home/freemonitor/restore-token-eDP_1");
+
+    for (const char* name : {"", ".", "..", "../x", "a/b", "a b", "a,b"}) {
+        CAPTURE(name);
+        const auto path = fm::RestoreTokenStore::defaultPath(name);
+        REQUIRE_FALSE(path);
+        CHECK(path.error().code == fm::ErrorCode::INVALID_ARGUMENT);
     }
 }

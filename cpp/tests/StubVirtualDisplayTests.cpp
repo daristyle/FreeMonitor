@@ -17,6 +17,8 @@ TEST_CASE("create returns the output to capture and keeps the mode") {
     const auto target = virtualDisplay.create(TEST_MODE);
     REQUIRE(target);
     CHECK(target->outputName == fm::StubVirtualDisplay::OUTPUT_NAME);
+    CHECK(target->width == TEST_MODE.width);
+    CHECK(target->height == TEST_MODE.height);
     CHECK(virtualDisplay.exists());
     CHECK(virtualDisplay.currentMode().width == TEST_MODE.width);
     CHECK(virtualDisplay.currentMode().height == TEST_MODE.height);

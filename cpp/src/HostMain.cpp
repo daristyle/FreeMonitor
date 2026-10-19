@@ -87,10 +87,13 @@ namespace {
 
     void printUsage() {
         if constexpr (fm::DEVELOPMENT_MODE_AVAILABLE) {
-            std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--destination IPv4:PORT]");
+            std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
+            std::println(stderr,
+                         "                       [--position right|left|above|below|X,Y] [--destination IPv4:PORT]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams JPEG in development mode.");
         } else {
-            std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100]");
+            std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
+            std::println(stderr, "                       [--position right|left|above|below|X,Y]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C.");
         }
     }
@@ -133,16 +136,16 @@ int main(int argumentCount, char** arguments) {
         printEndpoint(*options->destination);
     }
 
-    const fm::DisplayMode displayMode{
-            .width = 1920, .height = 1080, .refreshRateHz = 60, .positionX = 1920, .positionY = 0};
     auto virtualDisplay = fm::createVirtualDisplay();
-    auto captureTarget = virtualDisplay->create(displayMode);
+    auto captureTarget = virtualDisplay->create(options->displayMode);
     if (!captureTarget) {
         std::println(stderr, "Could not create the virtual display: {}", captureTarget.error().message);
         return 1;
     }
+    std::println("Virtual monitor {} is {}x{} at {} Hz.", captureTarget->outputName, captureTarget->width,
+                 captureTarget->height, options->displayMode.refreshRateHz);
 
-    std::println("Starting capture. Choose a monitor if a screen sharing dialog appears.");
+    std::println("Starting capture. Share {} if a screen sharing dialog appears.", captureTarget->outputName);
     auto captureSource = fm::createCaptureSource();
     if (auto started = captureSource->start(*captureTarget); !started) {
         std::println(stderr, "Could not start capture: {}", started.error().message);

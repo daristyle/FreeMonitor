@@ -11,6 +11,8 @@
 namespace fm {
     struct CaptureTarget {
         std::string outputName;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
     };
 
     enum class CaptureStatus : std::uint8_t {

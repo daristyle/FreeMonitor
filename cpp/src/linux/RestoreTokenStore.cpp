@@ -1,5 +1,7 @@
 #include "linux/RestoreTokenStore.hpp"
 
+#include "linux/FileDescriptor.hpp"
+
 #include <cerrno>
 #include <cstddef>
 #include <cstdlib>
@@ -14,35 +16,6 @@
 
 namespace fm {
     namespace {
-        class FileDescriptor {
-        private:
-            int descriptor;
-
-        public:
-            explicit FileDescriptor(int descriptor) : descriptor(descriptor) {}
-
-            ~FileDescriptor() {
-                if (descriptor >= 0) {
-                    ::close(descriptor);
-                }
-            }
-
-            FileDescriptor(const FileDescriptor&) = delete;
-            FileDescriptor& operator=(const FileDescriptor&) = delete;
-
-            bool isOpen() const {
-                return descriptor >= 0;
-            }
-
-            int get() const {
-                return descriptor;
-            }
-
-            int release() {
-                return std::exchange(descriptor, -1);
-            }
-        };
-
         Error systemError(const char* operation, const std::filesystem::path& path) {
             const int code = errno;
             return Error{ErrorCode::DEVICE_FAILURE,
@@ -62,11 +35,30 @@ namespace fm {
             }
             return true;
         }
+
+        bool isValidOutputName(std::string_view outputName) {
+            if (outputName.empty()) {
+                return false;
+            }
+            for (const char character : outputName) {
+                const bool allowed = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                                     (character >= '0' && character <= '9') || character == '-' || character == '_';
+                if (!allowed) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     RestoreTokenStore::RestoreTokenStore(std::filesystem::path filePath) : filePath(std::move(filePath)) {}
 
-    Result<std::filesystem::path> RestoreTokenStore::defaultPath() {
+    Result<std::filesystem::path> RestoreTokenStore::defaultPath(std::string_view outputName) {
+        if (!isValidOutputName(outputName)) {
+            return std::unexpected(
+                    Error{ErrorCode::INVALID_ARGUMENT,
+                          "Output name must use only letters, digits, '-' and '_': " + std::string(outputName)});
+        }
         std::filesystem::path stateDirectory;
         if (const char* stateHome = std::getenv("XDG_STATE_HOME"); stateHome != nullptr && *stateHome == '/') {
             stateDirectory = stateHome;
@@ -75,7 +67,7 @@ namespace fm {
         } else {
             return std::unexpected(Error{ErrorCode::NOT_SUPPORTED, "Neither XDG_STATE_HOME nor HOME is set"});
         }
-        return stateDirectory / "freemonitor" / "restore-token";
+        return stateDirectory / "freemonitor" / ("restore-token-" + std::string(outputName));
     }
 
     std::optional<std::string> RestoreTokenStore::load() const {

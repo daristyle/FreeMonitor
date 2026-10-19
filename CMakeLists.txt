@@ -31,6 +31,7 @@ if(NOT WIN32)
 endif()
 
 add_library(fm_platform STATIC
+        cpp/src/DisplayLayout.cpp
         cpp/src/FrameMailbox.cpp
         cpp/src/stub/StubCaptureSource.cpp
         cpp/src/stub/StubEncoder.cpp
@@ -42,6 +43,8 @@ if(WIN32)
 else()
     target_sources(fm_platform PRIVATE
             cpp/src/JPEGEncoder.cpp
+            cpp/src/linux/HyprlandIPC.cpp
+            cpp/src/linux/HyprlandVirtualDisplay.cpp
             cpp/src/linux/LinuxBackends.cpp
             cpp/src/linux/PipeWireCaptureSource.cpp
             cpp/src/linux/PortalScreenCast.cpp
@@ -100,9 +103,13 @@ if(FM_BUILD_TESTS)
             cpp/tests/PacketsTests.cpp
             cpp/tests/VideoSenderTests.cpp
             cpp/tests/HostOptionsTests.cpp
+            cpp/tests/DisplayLayoutTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
+                cpp/tests/FileDescriptorTests.cpp
+                cpp/tests/HyprlandIPCTests.cpp
+                cpp/tests/HyprlandVirtualDisplayTests.cpp
                 cpp/tests/JPEGEncoderTests.cpp
                 cpp/tests/RestoreTokenStoreTests.cpp
                 cpp/tests/PipeWireFormatTests.cpp

@@ -7,10 +7,19 @@
 #include <memory>
 
 namespace fm {
+    enum class DisplayPlacement : std::uint8_t {
+        RIGHT,
+        LEFT,
+        ABOVE,
+        BELOW,
+        EXPLICIT,
+    };
+
     struct DisplayMode {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         std::uint32_t refreshRateHz = 60;
+        DisplayPlacement placement = DisplayPlacement::RIGHT;
         std::int32_t positionX = 0;
         std::int32_t positionY = 0;
     };

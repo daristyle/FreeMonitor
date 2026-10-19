@@ -4,6 +4,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -33,7 +34,32 @@ TEST_CASE("parseHostOptions uses the defaults without arguments") {
     REQUIRE(options);
     CHECK(options->runSeconds == fm::DEFAULT_RUN_SECONDS);
     CHECK(options->jpegQuality == fm::EncoderConfig{}.jpegQuality);
+    CHECK(options->displayMode.width == fm::DEFAULT_DISPLAY_WIDTH);
+    CHECK(options->displayMode.height == fm::DEFAULT_DISPLAY_HEIGHT);
+    CHECK(options->displayMode.refreshRateHz == fm::DisplayMode{}.refreshRateHz);
+    CHECK(options->displayMode.placement == fm::DisplayPlacement::RIGHT);
     CHECK_FALSE(options->destination);
+}
+
+TEST_CASE("parseHostOptions reads the virtual monitor's size, refresh rate and position") {
+    const auto options = parse({"--size", "2560x1600", "--refresh", "120", "--position", "-2560,40"});
+    REQUIRE(options);
+    CHECK(options->displayMode.width == 2560);
+    CHECK(options->displayMode.height == 1600);
+    CHECK(options->displayMode.refreshRateHz == 120);
+    CHECK(options->displayMode.placement == fm::DisplayPlacement::EXPLICIT);
+    CHECK(options->displayMode.positionX == -2560);
+    CHECK(options->displayMode.positionY == 40);
+}
+
+TEST_CASE("parseHostOptions reads a relative position") {
+    const auto [text, placement] =
+            GENERATE(std::pair{"right", fm::DisplayPlacement::RIGHT}, std::pair{"left", fm::DisplayPlacement::LEFT},
+                     std::pair{"above", fm::DisplayPlacement::ABOVE}, std::pair{"below", fm::DisplayPlacement::BELOW});
+    CAPTURE(text);
+    const auto options = parse({"--position", text});
+    REQUIRE(options);
+    CHECK(options->displayMode.placement == placement);
 }
 
 TEST_CASE("parseHostOptions reads every option") {
@@ -51,7 +77,13 @@ TEST_CASE("parseHostOptions rejects bad arguments") {
             std::vector<std::string_view>{"--seconds", "ten"}, std::vector<std::string_view>{"--seconds", "4294967296"},
             std::vector<std::string_view>{"--quality", "0"}, std::vector<std::string_view>{"--quality", "101"},
             std::vector<std::string_view>{"--quality", ""}, std::vector<std::string_view>{"--destination", "127.0.0.1"},
-            std::vector<std::string_view>{"--seconds", "5", "--quality"});
+            std::vector<std::string_view>{"--seconds", "5", "--quality"},
+            std::vector<std::string_view>{"--size", "1920"}, std::vector<std::string_view>{"--size", "0x1080"},
+            std::vector<std::string_view>{"--size", "1920x16385"},
+            std::vector<std::string_view>{"--size", "1920x1080x2"}, std::vector<std::string_view>{"--refresh", "0"},
+            std::vector<std::string_view>{"--refresh", "241"}, std::vector<std::string_view>{"--position", "middle"},
+            std::vector<std::string_view>{"--position", "1920"}, std::vector<std::string_view>{"--position", "1920,"},
+            std::vector<std::string_view>{"--position", "Right"}, std::vector<std::string_view>{"--position", "1e3,0"});
     const auto options = parse(arguments);
     REQUIRE_FALSE(options);
     CHECK(options.error().code == fm::ErrorCode::INVALID_ARGUMENT);

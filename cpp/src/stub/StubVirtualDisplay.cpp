@@ -18,7 +18,7 @@ namespace fm {
 
         this->mode = mode;
         created = true;
-        return CaptureTarget{std::string(OUTPUT_NAME)};
+        return CaptureTarget{std::string(OUTPUT_NAME), mode.width, mode.height};
     }
 
     void StubVirtualDisplay::destroy() {

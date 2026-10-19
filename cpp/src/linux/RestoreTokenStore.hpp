@@ -15,7 +15,7 @@ namespace fm {
     public:
         explicit RestoreTokenStore(std::filesystem::path filePath);
 
-        static Result<std::filesystem::path> defaultPath();
+        static Result<std::filesystem::path> defaultPath(std::string_view outputName);
 
         const std::filesystem::path& path() const {
             return filePath;

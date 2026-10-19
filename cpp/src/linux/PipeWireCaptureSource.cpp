@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <format>
 #include <optional>
 #include <string>
 #include <unistd.h>
@@ -194,14 +195,14 @@ namespace fm {
         stop();
     }
 
-    Result<> PipeWireCaptureSource::start(const CaptureTarget&) {
+    Result<> PipeWireCaptureSource::start(const CaptureTarget& target) {
         if (started) {
             return std::unexpected(Error{ErrorCode::INVALID_STATE, "Capture is already started"});
         }
         mailbox.reset();
 
         std::optional<RestoreTokenStore> tokenStore;
-        if (auto tokenPath = RestoreTokenStore::defaultPath()) {
+        if (auto tokenPath = RestoreTokenStore::defaultPath(target.outputName)) {
             tokenStore.emplace(*tokenPath);
         }
         const std::optional<std::string> restoreToken = tokenStore ? tokenStore->load() : std::nullopt;
@@ -211,6 +212,17 @@ namespace fm {
         if (!screenCast) {
             portal.reset();
             return std::unexpected(screenCast.error());
+        }
+        if (target.width != 0 && screenCast->width != 0 &&
+            (screenCast->width != target.width || screenCast->height != target.height)) {
+            ::close(screenCast->pipeWireDescriptor);
+            portal.reset();
+            return std::unexpected(Error{
+                    ErrorCode::INVALID_STATE,
+                    std::format("The screen sharing dialog shared a {}x{} monitor, but {} is {}x{}. Start again and "
+                                "share {}.",
+                                screenCast->width, screenCast->height, target.outputName, target.width, target.height,
+                                target.outputName)});
         }
         if (tokenStore && screenCast->restoreToken) {
             static_cast<void>(tokenStore->save(*screenCast->restoreToken));
