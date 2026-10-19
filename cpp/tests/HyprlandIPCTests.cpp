@@ -3,6 +3,7 @@
 #include "linux/HyprlandIPC.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
 #include <filesystem>
@@ -71,13 +72,27 @@ TEST_CASE("request rejects a socket path longer than sockaddr_un allows") {
     CHECK(reply.error().code == fm::ErrorCode::INVALID_ARGUMENT);
 }
 
+TEST_CASE("request refuses a timeout that is not positive, because 0 would mean waiting forever") {
+    FakeHyprlandServer server([](const std::string&) { return std::string("ok"); });
+    const auto timeout = GENERATE(0ms, -5ms);
+    CAPTURE(timeout.count());
+    const fm::HyprlandIPC ipc(server.path(), timeout);
+
+    const auto reply = ipc.request("monitors");
+    REQUIRE_FALSE(reply);
+    CHECK(reply.error().code == fm::ErrorCode::INVALID_ARGUMENT);
+    CHECK(server.receivedRequests().empty());
+}
+
 TEST_CASE("defaultSocketPath uses XDG_RUNTIME_DIR and the instance signature") {
     SECTION("under Hyprland") {
         const ScopedEnvironment runtime("XDG_RUNTIME_DIR", "/run/user/1000");
-        const ScopedEnvironment signature("HYPRLAND_INSTANCE_SIGNATURE", "abc_123");
+        const ScopedEnvironment signature("HYPRLAND_INSTANCE_SIGNATURE",
+                                          "36b2e0cfe0c6094dbc47bd42a437431315bb3087_1792409574_314394690");
         const auto path = fm::HyprlandIPC::defaultSocketPath();
         REQUIRE(path);
-        CHECK(*path == "/run/user/1000/hypr/abc_123/.socket.sock");
+        CHECK(*path == "/run/user/1000/hypr/36b2e0cfe0c6094dbc47bd42a437431315bb3087_1792409574_314394690/"
+                       ".socket.sock");
     }
     SECTION("not under Hyprland") {
         const ScopedEnvironment runtime("XDG_RUNTIME_DIR", "/run/user/1000");
@@ -85,8 +100,10 @@ TEST_CASE("defaultSocketPath uses XDG_RUNTIME_DIR and the instance signature") {
         CHECK_FALSE(fm::HyprlandIPC::defaultSocketPath());
     }
     SECTION("a signature that is not a plain directory name") {
+        const char* value = GENERATE("../escape", "..", ".", "/tmp/evil", "a/b", "a b", "a-b", "");
+        CAPTURE(value);
         const ScopedEnvironment runtime("XDG_RUNTIME_DIR", "/run/user/1000");
-        const ScopedEnvironment signature("HYPRLAND_INSTANCE_SIGNATURE", "../escape");
+        const ScopedEnvironment signature("HYPRLAND_INSTANCE_SIGNATURE", value);
         CHECK_FALSE(fm::HyprlandIPC::defaultSocketPath());
     }
     SECTION("no runtime directory") {

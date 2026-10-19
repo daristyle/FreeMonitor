@@ -129,7 +129,8 @@ TEST_CASE("parseHyprlandMonitors rejects a layout it cannot read") {
             std::string("Monitor A (ID 0):\n\t1920x1080@60 at 0x0\n\tscale: 0.00\n"),
             std::string("Monitor A (ID 0):\n\t1920x1080@60 at 0x0\n\tscale: big\n"),
             std::string("Monitor A (ID 0):\n\t1920x@60 at 0x0\n"), std::string("Monitor A:\n\t1920x1080@60 at 0x0\n"),
-            std::string("Monitor  (ID 0):\n\t1920x1080@60 at 0x0\n"));
+            std::string("Monitor  (ID 0):\n\t1920x1080@60 at 0x0\n"),
+            std::string("Monitor (ID 0):\n\t1920x1080@60 at 0x0\n"));
     CAPTURE(reply);
     CHECK_FALSE(fm::parseHyprlandMonitors(reply));
 }

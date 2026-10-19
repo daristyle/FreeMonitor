@@ -32,6 +32,20 @@ namespace fm {
                                 .tv_usec = static_cast<suseconds_t>(microseconds.count())};
             return ::setsockopt(descriptor, SOL_SOCKET, option, &value, sizeof(value)) == 0;
         }
+
+        bool isValidSignature(std::string_view signature) {
+            if (signature.empty()) {
+                return false;
+            }
+            for (const char character : signature) {
+                const bool allowed = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                                     (character >= '0' && character <= '9') || character == '_';
+                if (!allowed) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     HyprlandIPC::HyprlandIPC(std::filesystem::path socketPath, std::chrono::milliseconds timeout)
@@ -40,7 +54,7 @@ namespace fm {
     Result<std::filesystem::path> HyprlandIPC::defaultSocketPath() {
         const char* signature = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
         const char* runtimeDirectory = std::getenv("XDG_RUNTIME_DIR");
-        if (signature == nullptr || *signature == '\0' || std::strchr(signature, '/') != nullptr) {
+        if (signature == nullptr || !isValidSignature(signature)) {
             return std::unexpected(Error{ErrorCode::NOT_SUPPORTED, "Not running under Hyprland"});
         }
         if (runtimeDirectory == nullptr || *runtimeDirectory != '/') {
@@ -50,6 +64,9 @@ namespace fm {
     }
 
     Result<std::string> HyprlandIPC::request(std::string_view command) const {
+        if (timeout <= std::chrono::milliseconds::zero()) {
+            return std::unexpected(Error{ErrorCode::INVALID_ARGUMENT, "Hyprland request timeout must be positive"});
+        }
         sockaddr_un address{};
         address.sun_family = AF_UNIX;
         const std::string pathText = socketPath.string();
