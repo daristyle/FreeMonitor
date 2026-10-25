@@ -44,19 +44,18 @@ class DecoderLatencyTests {
                 log("  skipped: size not supported")
                 continue
             }
-            for (lowLatency in listOf(true, false)) {
-                val label = "${decoder.name} low latency ${if (lowLatency) "on" else "off"}"
+            for (settings in DecoderLatencyMeasurement.Settings.entries) {
+                val label = "${decoder.name} ${settings.label}"
                 try {
-                    val measurement = DecoderLatencyMeasurement(decoder.name, stream, lowLatency)
+                    val measurement = DecoderLatencyMeasurement(decoder.name, stream, settings)
                     val lockstep = measurement.lockstep()
                     val realtime = measurement.realtime()
                     log(
-                        "  low latency ${if (lowLatency) "on " else "off"}: " +
+                        "  ${settings.label.padEnd(settingsLabelWidth)}: " +
                             "lockstep held ${lockstep.framesHeld}, " +
-                            "first output after ${lockstep.firstOutputAfterInputs ?: "none"} inputs | " +
-                            "realtime median ${milliseconds(realtime.latencyMedianMs)}, " +
-                            "p95 ${milliseconds(realtime.latencyP95Ms)}, max ${milliseconds(realtime.latencyMaxMs)}, " +
-                            "held at end ${realtime.framesHeldAtEnd} | " +
+                            "first output after ${lockstep.firstOutputAfterInputs ?: "none"} inputs, " +
+                            "${describe(lockstep.latency)} | " +
+                            "realtime ${describe(realtime.latency)}, held at end ${realtime.framesHeldAtEnd} | " +
                             "decoded ${lockstep.framesDecoded} and ${realtime.framesDecoded} of ${stream.frames.size}",
                     )
                     if (lockstep.framesDecoded != stream.frames.size || realtime.framesDecoded != stream.frames.size) {
@@ -88,6 +87,11 @@ class DecoderLatencyTests {
 
     private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
 
+    private fun describe(latency: DecoderLatencyMeasurement.Latency): String =
+        "median ${milliseconds(
+            latency.medianMs,
+        )}, p95 ${milliseconds(latency.p95Ms)}, max ${milliseconds(latency.maxMs)}"
+
     private fun milliseconds(value: Double): String = "%.1f ms".format(Locale.US, value)
 
     private fun log(message: String) {
@@ -98,10 +102,11 @@ class DecoderLatencyTests {
         const val TAG = "DecoderLatency"
         const val FRAME_RATE = 60
         const val FRAME_COUNT = 120
-        const val FALLBACK_WIDTH = 1920
-        const val FALLBACK_HEIGHT = 1080
+        const val FALLBACK_WIDTH = 1280
+        const val FALLBACK_HEIGHT = 720
         const val BYTES_PER_KILOBYTE = 1024
         const val STREAM_FILE_NAME = "decoder-latency.h264"
         const val LOW_LATENCY_FEATURE = MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency
+        val settingsLabelWidth = DecoderLatencyMeasurement.Settings.entries.maxOf { it.label.length }
     }
 }

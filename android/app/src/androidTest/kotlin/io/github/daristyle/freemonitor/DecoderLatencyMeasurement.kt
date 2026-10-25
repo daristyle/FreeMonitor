@@ -10,32 +10,50 @@ import kotlin.math.ceil
 class DecoderLatencyMeasurement(
     private val decoderName: String,
     private val stream: H264TestStream,
-    private val lowLatency: Boolean,
+    private val settings: Settings,
 ) {
     private val frameDurationUs = MICROSECONDS_PER_SECOND / stream.frameRate
     private val frameIntervalNs = NANOSECONDS_PER_SECOND / stream.frameRate
     private val info = MediaCodec.BufferInfo()
 
+    enum class Settings(
+        val label: String,
+        val lowLatency: Boolean,
+        val realtimePriority: Boolean,
+    ) {
+        DEFAULT("default", false, false),
+        LOW_LATENCY("low latency", true, false),
+        LOW_LATENCY_REALTIME_PRIORITY("low latency + realtime priority", true, true),
+    }
+
+    data class Latency(
+        val medianMs: Double,
+        val p95Ms: Double,
+        val maxMs: Double,
+    )
+
     data class LockstepResult(
         val framesHeld: Int,
         val firstOutputAfterInputs: Int?,
+        val latency: Latency,
         val framesDecoded: Int,
     )
 
     data class RealtimeResult(
-        val latencyMedianMs: Double,
-        val latencyP95Ms: Double,
-        val latencyMaxMs: Double,
+        val latency: Latency,
         val framesHeldAtEnd: Int,
         val framesDecoded: Int,
     )
 
     fun lockstep(): LockstepResult =
         withDecoder { decoder ->
+            val queuedAt = LongArray(stream.frames.size)
+            val latenciesNs = mutableListOf<Long>()
             var framesOut = 0
             var framesHeld = 0
             var firstOutputAfterInputs: Int? = null
             stream.frames.forEachIndexed { index, frame ->
+                queuedAt[index] = System.nanoTime()
                 queue(decoder, frame, index * frameDurationUs, 0)
                 val deadline = System.nanoTime() + LOCKSTEP_WAIT_NS
                 while (framesOut <= index) {
@@ -44,6 +62,7 @@ class DecoderLatencyMeasurement(
                         break
                     }
                     if (dequeue(decoder, remainingUs) && isFrame()) {
+                        recordLatency(queuedAt, latenciesNs)
                         ++framesOut
                     }
                 }
@@ -55,7 +74,7 @@ class DecoderLatencyMeasurement(
                 }
             }
             framesOut += flush(decoder)
-            LockstepResult(framesHeld, firstOutputAfterInputs, framesOut)
+            LockstepResult(framesHeld, firstOutputAfterInputs, latency(latenciesNs), framesOut)
         }
 
     fun realtime(): RealtimeResult =
@@ -67,10 +86,7 @@ class DecoderLatencyMeasurement(
             fun pollUntil(timeNs: Long) {
                 while (System.nanoTime() < timeNs) {
                     if (dequeue(decoder, POLL_TIMEOUT_US) && isFrame()) {
-                        val index = (info.presentationTimeUs / frameDurationUs).toInt()
-                        if (index >= WARM_UP_FRAMES) {
-                            latenciesNs += System.nanoTime() - queuedAt[index]
-                        }
+                        recordLatency(queuedAt, latenciesNs)
                         ++framesDecoded
                     }
                 }
@@ -84,14 +100,7 @@ class DecoderLatencyMeasurement(
             }
             pollUntil(start + stream.frames.size * frameIntervalNs)
             val framesHeldAtEnd = flush(decoder)
-            latenciesNs.sort()
-            RealtimeResult(
-                latencyMedianMs = percentileMs(latenciesNs, MEDIAN),
-                latencyP95Ms = percentileMs(latenciesNs, P95),
-                latencyMaxMs = percentileMs(latenciesNs, MAXIMUM),
-                framesHeldAtEnd = framesHeldAtEnd,
-                framesDecoded = framesDecoded + framesHeldAtEnd,
-            )
+            RealtimeResult(latency(latenciesNs), framesHeldAtEnd, framesDecoded + framesHeldAtEnd)
         }
 
     private fun <T> withDecoder(measure: (MediaCodec) -> T): T =
@@ -117,8 +126,12 @@ class DecoderLatencyMeasurement(
     private fun decoderFormat(): MediaFormat =
         MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, stream.width, stream.height).apply {
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, stream.largestUnitSize)
-            if (lowLatency) {
+            if (settings.lowLatency) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            }
+            if (settings.realtimePriority) {
+                setInteger(MediaFormat.KEY_PRIORITY, REALTIME_PRIORITY)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, MAXIMUM_OPERATING_RATE)
             }
         }
 
@@ -153,6 +166,16 @@ class DecoderLatencyMeasurement(
 
     private fun isEndOfStream(): Boolean = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
 
+    private fun recordLatency(
+        queuedAt: LongArray,
+        latenciesNs: MutableList<Long>,
+    ) {
+        val index = (info.presentationTimeUs / frameDurationUs).toInt()
+        if (index >= WARM_UP_FRAMES) {
+            latenciesNs += System.nanoTime() - queuedAt[index]
+        }
+    }
+
     private fun flush(decoder: MediaCodec): Int {
         queue(decoder, ByteArray(0), stream.frames.size * frameDurationUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
         var frames = 0
@@ -170,6 +193,11 @@ class DecoderLatencyMeasurement(
         return frames
     }
 
+    private fun latency(latenciesNs: List<Long>): Latency {
+        val sortedNs = latenciesNs.sorted()
+        return Latency(percentileMs(sortedNs, MEDIAN), percentileMs(sortedNs, P95), percentileMs(sortedNs, MAXIMUM))
+    }
+
     private fun percentileMs(
         sortedNs: List<Long>,
         fraction: Double,
@@ -184,6 +212,8 @@ class DecoderLatencyMeasurement(
     private companion object {
         const val WARM_UP_FRAMES = 10
         const val MAX_IMAGES = 2
+        const val REALTIME_PRIORITY = 0
+        const val MAXIMUM_OPERATING_RATE = Short.MAX_VALUE.toInt()
         const val LOCKSTEP_WAIT_NS = 100_000_000L
         const val FLUSH_TIMEOUT_NS = 2_000_000_000L
         const val INPUT_TIMEOUT_US = 1_000_000L

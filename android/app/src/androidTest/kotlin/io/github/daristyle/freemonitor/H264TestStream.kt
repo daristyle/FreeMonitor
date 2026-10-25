@@ -62,12 +62,46 @@ class H264TestStream(
         ): H264TestStream {
             val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
             for (size in sizes) {
-                val format = encoderFormat(size, frameRate)
-                val encoderName = codecList.findEncoderForFormat(format) ?: continue
-                return encode(encoderName, format, frameCount)
+                for (info in avcEncoders(codecList)) {
+                    val capabilities = info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    val video = checkNotNull(capabilities.videoCapabilities)
+                    if (!video.isSizeSupported(size.width, size.height)) {
+                        continue
+                    }
+                    val encoderFrameRate =
+                        minOf(frameRate, video.getSupportedFrameRatesFor(size.width, size.height).upper.toInt())
+                    val format = encoderFormat(size, encoderFrameRate)
+                    if (capabilities.isFormatSupported(format)) {
+                        return encode(info.name, format, frameRate, frameCount)
+                    }
+                }
             }
-            error("No H.264 encoder supports any of $sizes")
+            error("No H.264 encoder supports any of $sizes: ${describeEncoders(codecList, sizes)}")
         }
+
+        private fun avcEncoders(codecList: MediaCodecList): List<MediaCodecInfo> =
+            codecList.codecInfos.filter {
+                it.isEncoder && !it.isAlias && MediaFormat.MIMETYPE_VIDEO_AVC in it.supportedTypes
+            }
+
+        private fun describeEncoders(
+            codecList: MediaCodecList,
+            sizes: List<Size>,
+        ): String =
+            avcEncoders(codecList)
+                .joinToString("; ") { info ->
+                    val video =
+                        checkNotNull(info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities)
+                    val rates =
+                        sizes.joinToString(", ") { size ->
+                            if (video.isSizeSupported(size.width, size.height)) {
+                                "$size up to ${video.getSupportedFrameRatesFor(size.width, size.height).upper} fps"
+                            } else {
+                                "$size unsupported"
+                            }
+                        }
+                    "${info.name}: bitrate ${video.bitrateRange}, $rates"
+                }
 
         private fun encoderFormat(
             size: Size,
@@ -84,11 +118,11 @@ class H264TestStream(
         private fun encode(
             encoderName: String,
             format: MediaFormat,
+            frameRate: Int,
             frameCount: Int,
         ): H264TestStream {
             val width = format.getInteger(MediaFormat.KEY_WIDTH)
             val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-            val frameRate = format.getInteger(MediaFormat.KEY_FRAME_RATE)
             val frames = mutableListOf<ByteArray>()
             var codecConfig = ByteArray(0)
             val encoder = MediaCodec.createByCodecName(encoderName)
