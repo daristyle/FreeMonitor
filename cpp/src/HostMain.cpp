@@ -1,7 +1,9 @@
 #include "CaptureSource.hpp"
 #include "Encoder.hpp"
+#include "FrameTimingLog.hpp"
 #include "HostOptions.hpp"
 #include "Session.hpp"
+#include "Timestamp.hpp"
 #include "UDPSocket.hpp"
 #include "VideoSender.hpp"
 #include "VirtualDisplay.hpp"
@@ -13,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <optional>
 #include <print>
 #include <random>
@@ -90,12 +93,14 @@ namespace {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
             std::println(stderr,
                          "                       [--position right|left|above|below|X,Y] [--destination IPv4:PORT]");
+            std::println(stderr, "                       [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams JPEG in development mode.");
         } else {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
-            std::println(stderr, "                       [--position right|left|above|below|X,Y]");
+            std::println(stderr, "                       [--position right|left|above|below|X,Y] [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C.");
         }
+        std::println(stderr, "  --timing-log writes one CSV line of stage timestamps per frame.");
     }
 
     void printEndpoint(const fm::Endpoint& endpoint) {
@@ -134,6 +139,17 @@ int main(int argumentCount, char** arguments) {
         videoSender.emplace(*udpSocket, randomDevice());
         std::print("Development mode: streaming JPEG with sessionId 0 to ");
         printEndpoint(*options->destination);
+    }
+
+    std::unique_ptr<fm::FrameTimingLog> timingLog;
+    if (options->timingLogPath) {
+        auto opened = fm::FrameTimingLog::open(*options->timingLogPath);
+        if (!opened) {
+            std::println(stderr, "{}", opened.error().message);
+            return 1;
+        }
+        timingLog = std::move(*opened);
+        std::println("Writing frame timings to {}", *options->timingLogPath);
     }
 
     auto virtualDisplay = fm::createVirtualDisplay();
@@ -186,7 +202,10 @@ int main(int argumentCount, char** arguments) {
             break;
         }
         if (status == fm::CaptureStatus::FRAME_READY) {
-            captureDelays.add(Clock::now() - capturedFrame.captureTime);
+            const auto acquireTime = Clock::now();
+            fm::FrameTiming timing{.captureUs = fm::toTimestampUs(capturedFrame.captureTime),
+                                   .acquireUs = fm::toTimestampUs(acquireTime)};
+            captureDelays.add(acquireTime - capturedFrame.captureTime);
             if (previousCaptureTime) {
                 frameIntervals.add(capturedFrame.captureTime - *previousCaptureTime);
             }
@@ -202,24 +221,43 @@ int main(int argumentCount, char** arguments) {
             const auto encodeStart = Clock::now();
             const bool encoded = encoderConfigured &&
                                  encoder->encode(capturedFrame, encodedFrame) == fm::EncodeStatus::FRAME_ENCODED;
+            const auto encodeEnd = Clock::now();
             captureSource->releaseFrame();
             ++periodFrames;
+            timing.encodeStartUs = fm::toTimestampUs(encodeStart);
+            timing.encodeEndUs = fm::toTimestampUs(encodeEnd);
 
             if (!encoded) {
                 ++encodeFailures;
+                timing.outcome = fm::FrameOutcome::ENCODE_FAILED;
             } else {
-                encodeTimes.add(Clock::now() - encodeStart);
+                encodeTimes.add(encodeEnd - encodeStart);
                 encodedSizes.add(encodedFrame.data.size());
+                timing.outcome = fm::FrameOutcome::ENCODED;
+                timing.codec = fm::Codec::JPEG;
+                timing.keyframe = encodedFrame.keyframe;
+                timing.frameBytes = static_cast<std::uint32_t>(encodedFrame.data.size());
                 if (videoSender) {
+                    const auto sendStart = Clock::now();
                     const auto sendResult = videoSender->send(encodedFrame, fm::Codec::JPEG, session);
+                    const auto sendEnd = Clock::now();
                     periodPackets += sendResult.packetsSent;
                     periodBytes += sendResult.bytesSent;
+                    timing.frameId = sendResult.frameId;
+                    timing.packetsSent = sendResult.packetsSent;
+                    timing.sendStartUs = fm::toTimestampUs(sendStart);
+                    timing.sendEndUs = fm::toTimestampUs(sendEnd);
                     if (sendResult.status == fm::FrameSendStatus::FRAME_SENT) {
-                        captureToSendTimes.add(Clock::now() - encodedFrame.captureTime);
+                        captureToSendTimes.add(sendEnd - encodedFrame.captureTime);
+                        timing.outcome = fm::FrameOutcome::SENT;
                     } else {
                         ++sendFailures;
+                        timing.outcome = fm::FrameOutcome::SEND_FAILED;
                     }
                 }
+            }
+            if (timingLog) {
+                timingLog->record(timing);
             }
         }
 
@@ -258,5 +296,14 @@ int main(int argumentCount, char** arguments) {
 
     captureSource->stop();
     std::println("Stopped after {:.1f} s", std::chrono::duration<double>(Clock::now() - startTime).count());
+    if (timingLog) {
+        if (const auto closed = timingLog->close(); !closed) {
+            std::println(stderr, "{}", closed.error().message);
+            exitCode = 1;
+        }
+        if (const std::uint64_t dropped = timingLog->droppedRecordCount(); dropped > 0) {
+            std::println(stderr, "Warning: {} frame timings were dropped because the log could not keep up.", dropped);
+        }
+    }
     return exitCode;
 }

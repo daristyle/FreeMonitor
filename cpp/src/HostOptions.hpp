@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace fm {
@@ -20,9 +21,10 @@ namespace fm {
 
     struct HostOptions {
         std::uint32_t runSeconds = DEFAULT_RUN_SECONDS;
-        std::uint8_t jpegQuality = EncoderConfig{}.jpegQuality;
+        std::uint8_t jpegQuality = EncoderConf6ig{}.jpegQuality;
         DisplayMode displayMode{.width = DEFAULT_DISPLAY_WIDTH, .height = DEFAULT_DISPLAY_HEIGHT};
         std::optional<Endpoint> destination;
+        std::optional<std::string> timingLogPath;
     };
 
     std::optional<Endpoint> parseEndpoint(std::string_view text);

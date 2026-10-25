@@ -38,6 +38,7 @@ TEST_CASE("parseHostOptions uses the defaults without arguments") {
     CHECK(options->displayMode.height == fm::DEFAULT_DISPLAY_HEIGHT);
     CHECK(options->displayMode.refreshRateHz == fm::DisplayMode{}.refreshRateHz);
     CHECK(options->displayMode.placement == fm::DisplayPlacement::RIGHT);
+    CHECK_FALSE(options->timingLogPath);
     CHECK_FALSE(options->destination);
 }
 
@@ -63,11 +64,13 @@ TEST_CASE("parseHostOptions reads a relative position") {
 }
 
 TEST_CASE("parseHostOptions reads every option") {
-    const auto options = parse({"--seconds", "0", "--quality", "55", "--destination", "10.0.0.2:50500"});
+    const auto options = parse({"--seconds", "0", "--quality", "55", "--destination", "10.0.0.2:50500", "--timing-log",
+                                "runs/host-timing.csv"});
     REQUIRE(options);
     CHECK(options->runSeconds == 0);
     CHECK(options->jpegQuality == 55);
     CHECK(options->destination == fm::Endpoint{fm::makeIPAddress(10, 0, 0, 2), 50500});
+    CHECK(options->timingLogPath == "runs/host-timing.csv");
 }
 
 TEST_CASE("parseHostOptions rejects bad arguments") {
@@ -83,7 +86,8 @@ TEST_CASE("parseHostOptions rejects bad arguments") {
             std::vector<std::string_view>{"--size", "1920x1080x2"}, std::vector<std::string_view>{"--refresh", "0"},
             std::vector<std::string_view>{"--refresh", "241"}, std::vector<std::string_view>{"--position", "middle"},
             std::vector<std::string_view>{"--position", "1920"}, std::vector<std::string_view>{"--position", "1920,"},
-            std::vector<std::string_view>{"--position", "Right"}, std::vector<std::string_view>{"--position", "1e3,0"});
+            std::vector<std::string_view>{"--position", "Right"}, std::vector<std::string_view>{"--position", "1e3,0"},
+            std::vector<std::string_view>{"--timing-log"}, std::vector<std::string_view>{"--timing-log", ""});
     const auto options = parse(arguments);
     REQUIRE_FALSE(options);
     CHECK(options.error().code == fm::ErrorCode::INVALID_ARGUMENT);
@@ -96,4 +100,5 @@ TEST_CASE("--destination is refused when development mode is not allowed") {
     CHECK(options.error().message.find("release") != std::string::npos);
 
     CHECK(parse({"--seconds", "5", "--quality", "70"}, false));
+    CHECK(parse({"--timing-log", "host-timing.csv"}, false));
 }

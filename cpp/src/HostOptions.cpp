@@ -115,7 +115,7 @@ namespace fm {
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const std::string_view option = arguments[i];
             if (option != "--seconds" && option != "--quality" && option != "--destination" && option != "--size" &&
-                option != "--refresh" && option != "--position") {
+                option != "--refresh" && option != "--position" && option != "--timing-log") {
                 return invalidOption("Unknown option " + std::string(option));
             }
             if (i + 1 >= arguments.size()) {
@@ -149,6 +149,11 @@ namespace fm {
                 if (!parsePosition(value, options.displayMode)) {
                     return invalidOption("--position must be right, left, above, below or X,Y, for example -1920,0");
                 }
+            } else if (option == "--timing-log") {
+                if (value.empty()) {
+                    return invalidOption("--timing-log must be a file path, for example host-timing.csv");
+                }
+                options.timingLogPath = std::string(value);
             } else {
                 if (!developmentModeAllowed) {
                     return invalidOption("--destination is development mode, which a release build does not have");

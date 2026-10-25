@@ -5,8 +5,6 @@
 
 namespace fm {
     namespace {
-        constexpr auto RELAXED = std::memory_order_relaxed;
-
         bool isValidHeader(const CommonHeader& header) noexcept {
             return header.magic == MAGIC && header.version == PROTOCOL_VERSION && header.headerReserved == 0;
         }
@@ -44,12 +42,12 @@ namespace fm {
         resetReassembler();
         mailbox.reset();
         lastCompletion = std::chrono::steady_clock::now();
-        stopRequested.store(false, RELAXED);
+        stopRequested.store(false, std::memory_order_relaxed);
         receiveThread = std::thread([this] { run(); });
     }
 
     void FrameReceiver::stop() noexcept {
-        stopRequested.store(true, RELAXED);
+        stopRequested.store(true, std::memory_order_relaxed);
         if (receiveThread.joinable()) {
             receiveThread.join();
         }
@@ -71,29 +69,29 @@ namespace fm {
 
     FrameReceiverStatistics FrameReceiver::statistics() noexcept {
         return FrameReceiverStatistics{
-                .packets = packets.load(RELAXED),
-                .invalidPackets = invalidPackets.load(RELAXED),
-                .ignoredPackets = ignoredPackets.load(RELAXED),
-                .framesCompleted = framesCompleted.load(RELAXED),
-                .framesDropped = framesDropped.load(RELAXED),
+                .packets = packets.load(std::memory_order_relaxed),
+                .invalidPackets = invalidPackets.load(std::memory_order_relaxed),
+                .ignoredPackets = ignoredPackets.load(std::memory_order_relaxed),
+                .framesCompleted = framesCompleted.load(std::memory_order_relaxed),
+                .framesDropped = framesDropped.load(std::memory_order_relaxed),
                 .framesReplaced = mailbox.droppedFrameCount(),
-                .senderRestarts = senderRestarts.load(RELAXED),
+                .senderRestarts = senderRestarts.load(std::memory_order_relaxed),
         };
     }
 
     void FrameReceiver::run() noexcept {
         Endpoint from;
-        while (!stopRequested.load(RELAXED)) {
+        while (!stopRequested.load(std::memory_order_relaxed)) {
             const ReceiveResult result = udpSocket.receiveFrom(packetBuffer, from, RECEIVE_POLL_INTERVAL);
             const auto now = std::chrono::steady_clock::now();
             switch (result.status) {
                 case ReceiveStatus::RECEIVED:
-                    packets.fetch_add(1, RELAXED);
+                    packets.fetch_add(1, std::memory_order_relaxed);
                     handlePacket(std::span<const std::uint8_t>(packetBuffer).first(result.size), now);
                     break;
                 case ReceiveStatus::TRUNCATED:
-                    packets.fetch_add(1, RELAXED);
-                    invalidPackets.fetch_add(1, RELAXED);
+                    packets.fetch_add(1, std::memory_order_relaxed);
+                    invalidPackets.fetch_add(1, std::memory_order_relaxed);
                     break;
                 case ReceiveStatus::NO_DATAGRAM:
                     reassembler.expire(now);
@@ -102,7 +100,7 @@ namespace fm {
                     std::this_thread::sleep_for(RECEIVE_POLL_INTERVAL);
                     break;
             }
-            framesDropped.store(framesDroppedBeforeReset + reassembler.framesDropped(), RELAXED);
+            framesDropped.store(framesDroppedBeforeReset + reassembler.framesDropped(), std::memory_order_relaxed);
         }
         mailbox.close();
     }
@@ -111,28 +109,28 @@ namespace fm {
                                      std::chrono::steady_clock::time_point now) noexcept {
         CommonHeader header;
         if (!header.read(packet) || !isValidHeader(header)) {
-            invalidPackets.fetch_add(1, RELAXED);
+            invalidPackets.fetch_add(1, std::memory_order_relaxed);
             return;
         }
         if (header.type != static_cast<std::uint8_t>(PacketType::VIDEO_FRAGMENT) || header.sessionId != sessionId) {
-            ignoredPackets.fetch_add(1, RELAXED);
+            ignoredPackets.fetch_add(1, std::memory_order_relaxed);
             return;
         }
         VideoFragment fragment;
         if (!fragment.read(packet)) {
-            invalidPackets.fetch_add(1, RELAXED);
+            invalidPackets.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
         FragmentStatus status = reassembler.accept(fragment, now);
         if (status == FragmentStatus::TOO_OLD && now - lastCompletion >= senderRestartTimeout) {
             resetReassembler();
-            senderRestarts.fetch_add(1, RELAXED);
+            senderRestarts.fetch_add(1, std::memory_order_relaxed);
             lastCompletion = now;
             status = reassembler.accept(fragment, now);
         }
         if (status == FragmentStatus::INVALID) {
-            invalidPackets.fetch_add(1, RELAXED);
+            invalidPackets.fetch_add(1, std::memory_order_relaxed);
         } else if (status == FragmentStatus::FRAME_COMPLETE) {
             publishCompletedFrame(now);
         }
@@ -145,7 +143,7 @@ namespace fm {
         frame.data = {};
         mailbox.publish(frame, frameBytes);
         lastCompletion = now;
-        framesCompleted.fetch_add(1, RELAXED);
+        framesCompleted.fetch_add(1, std::memory_order_relaxed);
     }
 
     void FrameReceiver::resetReassembler() noexcept {

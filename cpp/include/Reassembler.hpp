@@ -38,6 +38,8 @@ namespace fm {
         Codec codec = Codec::JPEG;
         bool keyframe = false;
         std::uint64_t captureTimestampUs = 0;
+        std::chrono::steady_clock::time_point firstFragmentTime;
+        std::chrono::steady_clock::time_point completeTime;
     };
 
     class Reassembler {
@@ -45,6 +47,7 @@ namespace fm {
         struct Slot {
             std::vector<std::uint8_t> data;
             std::bitset<MAX_FRAGMENT_COUNT> received;
+            std::chrono::steady_clock::time_point firstFragmentTime;
             std::chrono::steady_clock::time_point lastProgress;
             std::uint64_t captureTimestampUs = 0;
             std::uint32_t frameId = 0;
@@ -63,11 +66,12 @@ namespace fm {
         std::uint32_t droppedCount = 0;
 
         static bool matches(const Slot& slot, const VideoFragment& fragment) noexcept;
-        static void start(Slot& slot, const VideoFragment& fragment) noexcept;
+        static void start(Slot& slot, const VideoFragment& fragment,
+                          std::chrono::steady_clock::time_point now) noexcept;
         Slot* findSlot(std::uint32_t frameId) noexcept;
         Slot* claimSlot(std::uint32_t frameId) noexcept;
         void discard(Slot& slot) noexcept;
-        void deliver(Slot& slot) noexcept;
+        void deliver(Slot& slot, std::chrono::steady_clock::time_point now) noexcept;
 
     public:
         Reassembler();

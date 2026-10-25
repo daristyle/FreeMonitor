@@ -7,10 +7,11 @@ class FrameReceiver(
 
     fun nextFrame(
         destination: ByteArray,
+        frameInfo: FrameInfo,
         timeoutMs: Int,
     ): Int {
         check(handle != 0L) { "FrameReceiver is closed" }
-        return NativeBridge.nextFrame(handle, destination, timeoutMs)
+        return NativeBridge.nextFrame(handle, destination, frameInfo.values, timeoutMs)
     }
 
     fun statistics(): ReceiverStatistics {

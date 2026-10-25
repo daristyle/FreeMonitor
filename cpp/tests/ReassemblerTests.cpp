@@ -95,6 +95,24 @@ TEST_CASE("a single-fragment frame is complete at once") {
     CHECK(reassembler.framesDropped() == 0);
 }
 
+TEST_CASE("a completed frame carries the arrival times of its first and last fragment") {
+    const TestFrame first = makeTestFrame(THREE_FRAGMENTS, 9);
+    const TestFrame second = makeTestFrame(THREE_FRAGMENTS, 10);
+    fm::Reassembler reassembler;
+
+    REQUIRE(reassembler.accept(first.fragments[2], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(first.fragments[0], START + 3ms) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(first.fragments[0], START + 4ms) == Status::DUPLICATE);
+    REQUIRE(reassembler.accept(first.fragments[1], START + 5ms) == Status::FRAME_COMPLETE);
+    CHECK(reassembler.completedFrame().firstFragmentTime == START);
+    CHECK(reassembler.completedFrame().completeTime == START + 5ms);
+
+    REQUIRE(feed(reassembler, second, {0, 1}, START + 10ms) == Status::ACCEPTED);
+    REQUIRE(feed(reassembler, second, {2}, START + 12ms) == Status::FRAME_COMPLETE);
+    CHECK(reassembler.completedFrame().firstFragmentTime == START + 10ms);
+    CHECK(reassembler.completedFrame().completeTime == START + 12ms);
+}
+
 TEST_CASE("fragments in order rebuild the frame") {
     const TestFrame frame = makeTestFrame(50'000, 1);
     fm::Reassembler reassembler;

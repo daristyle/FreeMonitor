@@ -14,6 +14,7 @@ namespace fm {
             result.status = FrameSendStatus::INVALID_FRAME;
             return result;
         }
+        result.frameId = nextFrameId;
         ++nextFrameId;
 
         const std::uint16_t fragmentCount = fragmenter.fragmentCount();

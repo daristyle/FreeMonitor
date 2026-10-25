@@ -11,9 +11,11 @@ import android.view.SurfaceHolder
 class FrameRenderer(
     private val surfaceHolder: SurfaceHolder,
     private val receiver: FrameReceiver,
+    private val timingLog: FrameTimingLog?,
     private val onStatus: (RenderStatus) -> Unit,
 ) {
     private val frameBuffer = ByteArray(NativeBridge.maxFrameSize())
+    private val frameInfo = FrameInfo()
     private val decodeOptions = BitmapFactory.Options()
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val destination = Rect()
@@ -43,12 +45,14 @@ class FrameRenderer(
         var lastStatus = SystemClock.elapsedRealtime()
         var lastFrame: Long? = null
         while (running) {
-            val length = receiver.nextFrame(frameBuffer, WAIT_TIMEOUT_MS)
-            if (length > 0 && drawFrame(length)) {
+            val length = receiver.nextFrame(frameBuffer, frameInfo, WAIT_TIMEOUT_MS)
+            val acquireUs = nowUs()
+            if (length == FrameReceiver.NOT_JPEG) {
+                ++notJPEGFrames
+                timingLog?.record(frameInfo, FrameTimingLog.Outcome.NOT_JPEG, acquireUs, 0, 0, 0)
+            } else if (length > 0 && showFrame(length, acquireUs)) {
                 ++framesShown
                 lastFrame = SystemClock.elapsedRealtime()
-            } else if (length == FrameReceiver.NOT_JPEG) {
-                ++notJPEGFrames
             }
             val now = SystemClock.elapsedRealtime()
             if (now - lastStatus >= STATUS_INTERVAL_MS) {
@@ -66,8 +70,26 @@ class FrameRenderer(
         }
     }
 
-    private fun drawFrame(length: Int): Boolean {
-        val decoded = decode(length) ?: return false
+    private fun showFrame(
+        length: Int,
+        acquireUs: Long,
+    ): Boolean {
+        val decodeStartUs = nowUs()
+        val decoded = decode(length)
+        val decodeEndUs = nowUs()
+        val posted = decoded != null && drawFrame(decoded)
+        val postUs = if (posted) nowUs() else 0L
+        val outcome =
+            when {
+                decoded == null -> FrameTimingLog.Outcome.DECODE_FAILED
+                posted -> FrameTimingLog.Outcome.SHOWN
+                else -> FrameTimingLog.Outcome.NOT_DRAWN
+            }
+        timingLog?.record(frameInfo, outcome, acquireUs, decodeStartUs, decodeEndUs, postUs)
+        return posted
+    }
+
+    private fun drawFrame(decoded: Bitmap): Boolean {
         val canvas = surfaceHolder.lockHardwareCanvas() ?: return false
         try {
             canvas.drawColor(Color.BLACK)
@@ -103,10 +125,13 @@ class FrameRenderer(
         }
     }
 
+    private fun nowUs(): Long = System.nanoTime() / NANOSECONDS_PER_MICROSECOND
+
     private companion object {
         const val RENDER_THREAD_NAME = "FreeMonitor render"
         const val WAIT_TIMEOUT_MS = 100
         const val STATUS_INTERVAL_MS = 1000L
         const val MILLISECONDS_PER_SECOND = 1000f
+        const val NANOSECONDS_PER_MICROSECOND = 1000L
     }
 }

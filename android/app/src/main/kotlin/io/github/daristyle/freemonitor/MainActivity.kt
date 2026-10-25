@@ -3,6 +3,7 @@ package io.github.daristyle.freemonitor
 import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -13,6 +14,10 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import java.io.File
+import java.io.IOException
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 class MainActivity :
     Activity(),
@@ -20,6 +25,7 @@ class MainActivity :
     private lateinit var waitingView: TextView
     private lateinit var statusView: TextView
     private var receiver: FrameReceiver? = null
+    private var timingLog: FrameTimingLog? = null
     private var renderer: FrameRenderer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,7 +74,8 @@ class MainActivity :
                 return
             }
         receiver = newReceiver
-        renderer = FrameRenderer(holder, newReceiver, ::onRenderStatus).also { it.start() }
+        timingLog = if (intent.getBooleanExtra(TIMING_LOG_EXTRA, false)) openTimingLog() else null
+        renderer = FrameRenderer(holder, newReceiver, timingLog, ::onRenderStatus).also { it.start() }
     }
 
     override fun surfaceChanged(
@@ -81,8 +88,31 @@ class MainActivity :
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         renderer?.stop()
         renderer = null
+        timingLog?.let(::closeTimingLog)
+        timingLog = null
         receiver?.close()
         receiver = null
+    }
+
+    private fun openTimingLog(): FrameTimingLog? {
+        val directory = getExternalFilesDir(TIMING_DIRECTORY) ?: return null
+        val file = File(directory, "tablet-timing-${LocalDateTime.now().format(timingFileTimeFormat)}.csv")
+        return try {
+            FrameTimingLog(file).also { Log.i(TAG, "Writing frame timings to ${file.absolutePath}") }
+        } catch (error: IOException) {
+            Log.w(TAG, "Could not create the timing log ${file.absolutePath}", error)
+            null
+        }
+    }
+
+    private fun closeTimingLog(log: FrameTimingLog) {
+        log.close()
+        if (log.failed) {
+            Log.w(TAG, "Writing the timing log failed")
+        }
+        if (log.droppedRecordCount > 0) {
+            Log.w(TAG, "${log.droppedRecordCount} frame timings were dropped because the log could not keep up")
+        }
     }
 
     private fun showWaiting() {
@@ -119,5 +149,9 @@ class MainActivity :
         const val STATUS_TEXT_SIZE_SP = 12f
         const val STATUS_ALPHA = 0.6f
         const val STATUS_PADDING_DP = 8f
+        const val TAG = "FreeMonitor"
+        const val TIMING_LOG_EXTRA = "timingLog"
+        const val TIMING_DIRECTORY = "timing"
+        val timingFileTimeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
     }
 }

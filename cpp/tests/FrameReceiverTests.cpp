@@ -86,11 +86,16 @@ TEST_CASE("a sent frame comes out of the receiver with its bytes and metadata") 
     Sender sender(endpointOf(*receiver), 5000);
     const auto data = makeFrameData(7 * fm::MAX_FRAGMENT_PAYLOAD + 99, 3);
     const auto encodedFrame = makeEncodedFrame(data, true);
+    const auto beforeSend = std::chrono::steady_clock::now();
     REQUIRE(sender.videoSender.send(encodedFrame, fm::Codec::JPEG, sender.session).status ==
             fm::FrameSendStatus::FRAME_SENT);
 
     fm::ReassembledFrame frame;
     REQUIRE(receiver->acquire(frame, WAIT_TIMEOUT) == fm::MailboxStatus::FRAME_READY);
+    const auto afterAcquire = std::chrono::steady_clock::now();
+    CHECK(frame.firstFragmentTime >= beforeSend);
+    CHECK(frame.firstFragmentTime <= frame.completeTime);
+    CHECK(frame.completeTime <= afterAcquire);
     CHECK(std::ranges::equal(frame.data, data));
     CHECK(frame.frameId == 5000);
     CHECK(frame.codec == fm::Codec::JPEG);

@@ -18,6 +18,7 @@ object NativeBridge {
     external fun nextFrame(
         handle: Long,
         destination: ByteArray,
+        frameInfo: LongArray,
         timeoutMs: Int,
     ): Int
 

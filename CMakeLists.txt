@@ -81,7 +81,7 @@ if(FM_BUILD_HOST)
     )
     target_link_libraries(fm_platform PRIVATE fm_warnings)
 
-    add_library(fm_host STATIC cpp/src/HostOptions.cpp)
+    add_library(fm_host STATIC cpp/src/FrameTimingLog.cpp cpp/src/HostOptions.cpp)
     target_include_directories(fm_host
             PUBLIC cpp/include cpp/src
     )
@@ -115,6 +115,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/PacketsTests.cpp
             cpp/tests/VideoSenderTests.cpp
             cpp/tests/FrameReceiverTests.cpp
+            cpp/tests/FrameTimingLogTests.cpp
             cpp/tests/HostOptionsTests.cpp
             cpp/tests/DisplayLayoutTests.cpp
     )

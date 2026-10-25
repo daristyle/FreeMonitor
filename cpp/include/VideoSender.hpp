@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace fm {
     enum class FrameSendStatus : std::uint8_t {
@@ -20,6 +21,7 @@ namespace fm {
 
     struct FrameSendResult {
         FrameSendStatus status = FrameSendStatus::FRAME_SENT;
+        std::optional<std::uint32_t> frameId;
         std::uint16_t packetsSent = 0;
         std::size_t bytesSent = 0;
     };

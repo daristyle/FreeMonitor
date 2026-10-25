@@ -46,8 +46,10 @@ namespace fm {
                slot.captureTimestampUs == fragment.captureTimestampUs;
     }
 
-    void Reassembler::start(Slot& slot, const VideoFragment& fragment) noexcept {
+    void Reassembler::start(Slot& slot, const VideoFragment& fragment,
+                            std::chrono::steady_clock::time_point now) noexcept {
         slot.received.reset();
+        slot.firstFragmentTime = now;
         slot.captureTimestampUs = fragment.captureTimestampUs;
         slot.frameId = fragment.frameId;
         slot.frameSize = fragment.frameSize;
@@ -89,12 +91,14 @@ namespace fm {
         ++droppedCount;
     }
 
-    void Reassembler::deliver(Slot& slot) noexcept {
+    void Reassembler::deliver(Slot& slot, std::chrono::steady_clock::time_point now) noexcept {
         completed.data = std::span<const std::uint8_t>(slot.data).first(slot.frameSize);
         completed.frameId = slot.frameId;
         completed.codec = slot.codec;
         completed.keyframe = (slot.flags & FragmentFlags::KEYFRAME) != 0;
         completed.captureTimestampUs = slot.captureTimestampUs;
+        completed.firstFragmentTime = slot.firstFragmentTime;
+        completed.completeTime = now;
         lastDeliveredFrameId = slot.frameId;
         slot.inUse = false;
         ++completedCount;
@@ -123,7 +127,7 @@ namespace fm {
             if (slot == nullptr) {
                 return FragmentStatus::TOO_OLD;
             }
-            start(*slot, fragment);
+            start(*slot, fragment, now);
         }
         if (slot->received.test(fragment.fragIndex)) {
             return FragmentStatus::DUPLICATE;
@@ -135,7 +139,7 @@ namespace fm {
         if (slot->receivedCount < slot->fragCount) {
             return FragmentStatus::ACCEPTED;
         }
-        deliver(*slot);
+        deliver(*slot, now);
         return FragmentStatus::FRAME_COMPLETE;
     }
 

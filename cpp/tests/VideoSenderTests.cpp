@@ -92,6 +92,7 @@ TEST_CASE("a sent frame arrives over loopback and reassembles to the same bytes"
 
     const auto result = videoSender.send(frame, fm::Codec::JPEG, loopback.session);
     CHECK(result.status == fm::FrameSendStatus::FRAME_SENT);
+    CHECK(result.frameId == firstFrameId);
     CHECK(result.packetsSent == expectedPackets);
     CHECK(result.bytesSent == expectedPackets * fm::VideoFragment::SIZE + frameSize);
     CHECK(loopback.session.nextSeq == firstSeq + expectedPackets);
@@ -181,6 +182,7 @@ TEST_CASE("an invalid frame sends nothing and uses no frameId or seq") {
         const std::vector<std::uint8_t> empty;
         const auto result = videoSender.send(makeEncodedFrame(empty, true), fm::Codec::JPEG, loopback.session);
         CHECK(result.status == fm::FrameSendStatus::INVALID_FRAME);
+        CHECK_FALSE(result.frameId);
         CHECK(result.packetsSent == 0);
         CHECK(result.bytesSent == 0);
     }
@@ -213,6 +215,7 @@ TEST_CASE("a failed send stops the frame and keeps the seq of the unsent packet"
     loopback.session.peer = fm::Endpoint{fm::LOOPBACK_IP_ADDRESS, 0};
     const auto result = videoSender.send(makeEncodedFrame(data, true), fm::Codec::JPEG, loopback.session);
     CHECK(result.status == fm::FrameSendStatus::SEND_FAILED);
+    CHECK(result.frameId == firstFrameId);
     CHECK(result.packetsSent == 0);
     CHECK(result.bytesSent == 0);
     CHECK(loopback.session.nextSeq == firstSeq);

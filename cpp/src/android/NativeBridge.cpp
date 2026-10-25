@@ -1,5 +1,6 @@
 #include "FrameReceiver.hpp"
 #include "Packets.hpp"
+#include "Timestamp.hpp"
 #include "UDPSocket.hpp"
 
 #include <jni.h>
@@ -18,6 +19,7 @@ namespace fm {
         constexpr jint MAX_PORT = 65535;
         constexpr jint NOT_JPEG = -1;
         constexpr jsize STATISTICS_COUNT = 7;
+        constexpr jsize FRAME_INFO_COUNT = 6;
 
         FrameReceiver* toReceiver(jlong handle) {
             return reinterpret_cast<FrameReceiver*>(static_cast<std::intptr_t>(handle));
@@ -58,12 +60,26 @@ namespace fm {
             return toHandle(receiver->release());
         }
 
-        jint nextFrame(JNIEnv* environment, jclass, jlong handle, jbyteArray destination, jint timeoutMs) {
+        jint nextFrame(JNIEnv* environment, jclass, jlong handle, jbyteArray destination, jlongArray frameInfo,
+                       jint timeoutMs) {
+            if (environment->GetArrayLength(frameInfo) < FRAME_INFO_COUNT) {
+                throwIllegalState(environment, "The frame info array is too short");
+                return 0;
+            }
             FrameReceiver* receiver = toReceiver(handle);
             ReassembledFrame frame;
             if (receiver->acquire(frame, std::chrono::milliseconds(timeoutMs)) != MailboxStatus::FRAME_READY) {
                 return 0;
             }
+            const std::array<jlong, FRAME_INFO_COUNT> info{
+                    static_cast<jlong>(frame.frameId),
+                    static_cast<jlong>(frame.data.size()),
+                    frame.keyframe ? 1 : 0,
+                    static_cast<jlong>(frame.captureTimestampUs),
+                    static_cast<jlong>(toTimestampUs(frame.firstFragmentTime)),
+                    static_cast<jlong>(toTimestampUs(frame.completeTime)),
+            };
+            environment->SetLongArrayRegion(frameInfo, 0, FRAME_INFO_COUNT, info.data());
             jint result = NOT_JPEG;
             bool destinationTooSmall = false;
             if (frame.codec == Codec::JPEG) {
@@ -107,7 +123,7 @@ namespace fm {
                 {"protocolVersion", "()I", reinterpret_cast<void*>(&protocolVersion)},
                 {"maxFrameSize", "()I", reinterpret_cast<void*>(&maxFrameSize)},
                 {"createReceiver", "(I)J", reinterpret_cast<void*>(&createReceiver)},
-                {"nextFrame", "(J[BI)I", reinterpret_cast<void*>(&nextFrame)},
+                {"nextFrame", "(J[B[JI)I", reinterpret_cast<void*>(&nextFrame)},
                 {"receiverStatistics", "(J)[J", reinterpret_cast<void*>(&receiverStatistics)},
                 {"destroyReceiver", "(J)V", reinterpret_cast<void*>(&destroyReceiver)},
         }};
