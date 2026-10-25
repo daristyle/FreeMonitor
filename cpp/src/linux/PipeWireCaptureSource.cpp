@@ -11,12 +11,13 @@
 #include <ctime>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <unistd.h>
 
 namespace fm {
     struct PipeWireStream {
-        FrameMailbox& mailbox;
+        FrameMailbox<CapturedFrame>& mailbox;
 
         pw_thread_loop* threadLoop = nullptr;
         pw_context* context = nullptr;
@@ -35,7 +36,7 @@ namespace fm {
         bool reserved = false;
         bool pipeWireInitialized = false;
 
-        explicit PipeWireStream(FrameMailbox& mailbox) : mailbox(mailbox) {}
+        explicit PipeWireStream(FrameMailbox<CapturedFrame>& mailbox) : mailbox(mailbox) {}
     };
 
     namespace {
@@ -106,7 +107,7 @@ namespace fm {
             description.stride = stride;
             description.format = stream.format;
             description.captureTime = captureTimeOf(buffer);
-            stream.mailbox.publish(description);
+            stream.mailbox.publish(description, frameBytes);
         }
 
         void onStateChanged(void* data, pw_stream_state, pw_stream_state state, const char* error) {
@@ -345,7 +346,17 @@ namespace fm {
         if (!started) {
             return CaptureStatus::CAPTURE_LOST;
         }
-        return mailbox.acquire(frame, timeout);
+        std::span<const std::uint8_t> pixels;
+        switch (mailbox.acquire(frame, pixels, timeout)) {
+            case MailboxStatus::FRAME_READY:
+                frame.pixels = pixels.data();
+                return CaptureStatus::FRAME_READY;
+            case MailboxStatus::NO_NEW_FRAME:
+                return CaptureStatus::NO_NEW_FRAME;
+            case MailboxStatus::CLOSED:
+                return CaptureStatus::CAPTURE_LOST;
+        }
+        return CaptureStatus::CAPTURE_LOST;
     }
 
     void PipeWireCaptureSource::releaseFrame() noexcept {

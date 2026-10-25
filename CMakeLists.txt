@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(FM_BUILD_HOST "Build the host and its platform backends" ON)
 option(FM_BUILD_TESTS "Build the Catch2 test suite" ${PROJECT_IS_TOP_LEVEL})
 option(FM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
@@ -23,40 +24,9 @@ else()
     endif()
 endif()
 
-if(NOT WIN32)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-    pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
-    pkg_check_modules(TURBOJPEG REQUIRED IMPORTED_TARGET libturbojpeg)
+if(FM_BUILD_TESTS AND NOT FM_BUILD_HOST)
+    message(FATAL_ERROR "FM_BUILD_TESTS needs FM_BUILD_HOST")
 endif()
-
-add_library(fm_platform STATIC
-        cpp/src/DisplayLayout.cpp
-        cpp/src/FrameMailbox.cpp
-        cpp/src/stub/StubCaptureSource.cpp
-        cpp/src/stub/StubEncoder.cpp
-        cpp/src/stub/StubVirtualDisplay.cpp
-        cpp/include/Reassembler.hpp
-)
-if(WIN32)
-    target_sources(fm_platform PRIVATE cpp/src/stub/StubBackends.cpp)
-else()
-    target_sources(fm_platform PRIVATE
-            cpp/src/JPEGEncoder.cpp
-            cpp/src/linux/HyprlandIPC.cpp
-            cpp/src/linux/HyprlandVirtualDisplay.cpp
-            cpp/src/linux/LinuxBackends.cpp
-            cpp/src/linux/PipeWireCaptureSource.cpp
-            cpp/src/linux/PortalScreenCast.cpp
-            cpp/src/linux/RestoreTokenStore.cpp
-    )
-    target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD PkgConfig::TURBOJPEG)
-endif()
-target_include_directories(fm_platform
-        PUBLIC cpp/include
-        PRIVATE cpp/src
-)
-target_link_libraries(fm_platform PRIVATE fm_warnings)
 
 add_library(fm_protocol STATIC)
 if(WIN32)
@@ -66,19 +36,61 @@ if(WIN32)
 else()
     target_sources(fm_protocol PRIVATE cpp/src/posix/UDPSocket.cpp)
 endif()
-target_sources(fm_protocol PRIVATE cpp/src/Fragmenter.cpp cpp/src/Reassembler.cpp cpp/src/VideoSender.cpp)
+target_sources(fm_protocol PRIVATE cpp/src/Fragmenter.cpp cpp/src/FrameReceiver.cpp cpp/src/Reassembler.cpp cpp/src/VideoSender.cpp)
 target_include_directories(fm_protocol PUBLIC cpp/include)
 target_link_libraries(fm_protocol PRIVATE fm_warnings)
 
-add_library(fm_host STATIC cpp/src/HostOptions.cpp)
-target_include_directories(fm_host
-        PUBLIC cpp/include cpp/src
-)
-target_compile_definitions(fm_host PUBLIC FM_DEVELOPMENT_MODE=$<IF:$<CONFIG:Release>,0,1>)
-target_link_libraries(fm_host PRIVATE fm_warnings)
+if(ANDROID)
+    set_target_properties(fm_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    add_library(freemonitor SHARED cpp/src/android/NativeBridge.cpp)
+    target_link_libraries(freemonitor PRIVATE fm_protocol fm_warnings)
+endif()
 
-add_executable(FreeMonitorHost cpp/src/HostMain.cpp)
-target_link_libraries(FreeMonitorHost PRIVATE fm_host fm_platform fm_protocol fm_warnings)
+if(FM_BUILD_HOST)
+    if(NOT WIN32)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
+        pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
+        pkg_check_modules(TURBOJPEG REQUIRED IMPORTED_TARGET libturbojpeg)
+    endif()
+
+    add_library(fm_platform STATIC
+            cpp/src/DisplayLayout.cpp
+            cpp/src/stub/StubCaptureSource.cpp
+            cpp/src/stub/StubEncoder.cpp
+            cpp/src/stub/StubVirtualDisplay.cpp
+            cpp/include/Reassembler.hpp
+    )
+    if(WIN32)
+        target_sources(fm_platform PRIVATE cpp/src/stub/StubBackends.cpp)
+    else()
+        target_sources(fm_platform PRIVATE
+                cpp/src/JPEGEncoder.cpp
+                cpp/src/linux/HyprlandIPC.cpp
+                cpp/src/linux/HyprlandVirtualDisplay.cpp
+                cpp/src/linux/LinuxBackends.cpp
+                cpp/src/linux/PipeWireCaptureSource.cpp
+                cpp/src/linux/PortalScreenCast.cpp
+                cpp/src/linux/RestoreTokenStore.cpp
+        )
+        target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD PkgConfig::TURBOJPEG)
+    endif()
+    target_include_directories(fm_platform
+            PUBLIC cpp/include
+            PRIVATE cpp/src
+    )
+    target_link_libraries(fm_platform PRIVATE fm_warnings)
+
+    add_library(fm_host STATIC cpp/src/HostOptions.cpp)
+    target_include_directories(fm_host
+            PUBLIC cpp/include cpp/src
+    )
+    target_compile_definitions(fm_host PUBLIC FM_DEVELOPMENT_MODE=$<IF:$<CONFIG:Release>,0,1>)
+    target_link_libraries(fm_host PRIVATE fm_warnings)
+
+    add_executable(FreeMonitorHost cpp/src/HostMain.cpp)
+    target_link_libraries(FreeMonitorHost PRIVATE fm_host fm_platform fm_protocol fm_warnings)
+endif()
 
 if(FM_BUILD_TESTS)
     include(FetchContent)
@@ -102,6 +114,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/ReassemblerTests.cpp
             cpp/tests/PacketsTests.cpp
             cpp/tests/VideoSenderTests.cpp
+            cpp/tests/FrameReceiverTests.cpp
             cpp/tests/HostOptionsTests.cpp
             cpp/tests/DisplayLayoutTests.cpp
     )

@@ -1,24 +1,30 @@
 #pragma once
 
-#include "CaptureSource.hpp"
-#include "Frame.hpp"
-
 #include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <span>
 #include <vector>
 
 namespace fm {
+    enum class MailboxStatus : std::uint8_t {
+        FRAME_READY,
+        NO_NEW_FRAME,
+        CLOSED,
+    };
+
+    template<typename Description>
     class FrameMailbox {
     private:
         static constexpr std::size_t SLOT_COUNT = 3;
 
         struct Slot {
-            std::vector<std::uint8_t> pixels;
-            CapturedFrame frame;
+            std::vector<std::uint8_t> bytes;
+            std::size_t size = 0;
+            Description description{};
         };
 
         std::array<Slot, SLOT_COUNT> slots;
@@ -38,12 +44,15 @@ namespace fm {
         void reset();
 
         std::uint8_t* beginWrite(std::size_t frameBytes);
-        void publish(const CapturedFrame& description);
+        void publish(const Description& description, std::size_t frameBytes);
         void close() noexcept;
 
-        CaptureStatus acquire(CapturedFrame& frame, std::chrono::milliseconds timeout) noexcept;
+        MailboxStatus acquire(Description& description, std::span<const std::uint8_t>& bytes,
+                              std::chrono::milliseconds timeout) noexcept;
         void release() noexcept;
 
         std::uint64_t droppedFrameCount() noexcept;
     };
 }
+
+#include "FrameMailbox.tpp"

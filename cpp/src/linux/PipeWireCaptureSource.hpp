@@ -12,7 +12,7 @@ namespace fm {
 
     class PipeWireCaptureSource final : public CaptureSource {
     private:
-        FrameMailbox mailbox;
+        FrameMailbox<CapturedFrame> mailbox;
         std::unique_ptr<PortalScreenCast> portal;
         std::unique_ptr<PipeWireStream> stream;
         bool started = false;
