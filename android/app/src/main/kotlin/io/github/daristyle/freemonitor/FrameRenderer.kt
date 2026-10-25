@@ -24,6 +24,9 @@ class FrameRenderer(
     private var thread: Thread? = null
 
     fun start() {
+        if (thread != null) {
+            return
+        }
         running = true
         thread = Thread(::renderLoop, RENDER_THREAD_NAME).also { it.start() }
     }
