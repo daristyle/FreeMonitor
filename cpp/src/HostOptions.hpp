@@ -21,7 +21,7 @@ namespace fm {
 
     struct HostOptions {
         std::uint32_t runSeconds = DEFAULT_RUN_SECONDS;
-        std::uint8_t jpegQuality = EncoderConf6ig{}.jpegQuality;
+        std::uint8_t jpegQuality = EncoderConfig{}.jpegQuality;
         DisplayMode displayMode{.width = DEFAULT_DISPLAY_WIDTH, .height = DEFAULT_DISPLAY_HEIGHT};
         std::optional<Endpoint> destination;
         std::optional<std::string> timingLogPath;
