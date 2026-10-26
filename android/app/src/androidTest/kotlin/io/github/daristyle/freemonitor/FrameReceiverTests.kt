@@ -29,7 +29,7 @@ class FrameReceiverTests {
             val sentUs = nowUs()
             DatagramSocket().use { sender ->
                 val packet = videoFragment(FRAME_ID, CAPTURE_US, sentUs, payload)
-                sender.send(DatagramPacket(packet, packet.size, InetAddress.getLoopbackAddress(), port))
+                sender.send(DatagramPacket(packet, packet.size, InetAddress.getByName(IPV4_LOOPBACK), port))
             }
 
             val frameBuffer = ByteArray(NativeBridge.maxFrameSize())
@@ -98,6 +98,7 @@ class FrameReceiverTests {
 
     private companion object {
         const val ANY_FREE_PORT = 0
+        const val IPV4_LOOPBACK = "127.0.0.1"
         const val SHORT_TIMEOUT_MS = 50
         const val LONG_TIMEOUT_MS = 2000
         const val PAYLOAD_SIZE = 100

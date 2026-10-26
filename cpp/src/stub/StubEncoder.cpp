@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <utility>
 
 namespace fm {
     StubEncoder::StubEncoder(Codec codec) : codec(codec) {}
@@ -20,7 +21,7 @@ namespace fm {
         this->config = config;
         outputBuffer.resize(static_cast<std::size_t>(config.width) * config.height * bytesPerPixel(config.inputFormat));
         configured = true;
-        keyframeRequested.store(true, std::memory_order_relaxed);
+        keyframeRequested = true;
         return {};
     }
 
@@ -36,15 +37,20 @@ namespace fm {
                         rowBytes);
         }
 
-        const bool requested = keyframeRequested.exchange(false, std::memory_order_relaxed);
+        const bool requested = std::exchange(keyframeRequested, false);
         output.data = outputBuffer;
+        output.codec = codec;
         output.keyframe = codec == Codec::JPEG || requested;
         output.captureTime = input.captureTime;
         return EncodeStatus::FRAME_ENCODED;
     }
 
     void StubEncoder::requestKeyframe() noexcept {
-        keyframeRequested.store(true, std::memory_order_relaxed);
+        keyframeRequested = true;
+    }
+
+    std::string_view StubEncoder::description() const noexcept {
+        return codec == Codec::JPEG ? "stub JPEG" : "stub H.264";
     }
 
 }

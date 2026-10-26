@@ -7,8 +7,8 @@ namespace fm {
         return std::make_unique<StubCaptureSource>();
     }
 
-    std::unique_ptr<Encoder> createEncoder(Codec codec) {
-        return std::make_unique<StubEncoder>(codec);
+    std::unique_ptr<Encoder> createEncoder(EncoderChoice choice) {
+        return std::make_unique<StubEncoder>(choice == EncoderChoice::JPEG ? Codec::JPEG : Codec::H264);
     }
 
     std::unique_ptr<VirtualDisplay> createVirtualDisplay() {

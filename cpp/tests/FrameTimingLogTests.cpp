@@ -1,4 +1,5 @@
 #include "FrameTimingLog.hpp"
+#include "TemporaryDirectory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -8,9 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <random>
 #include <string>
-#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,30 +23,6 @@ namespace {
     constexpr const char* HEADER_COMMENT = "# freemonitor-timing 1 host";
     constexpr const char* HEADER_COLUMNS = "frameId,outcome,codec,keyframe,frameBytes,packetsSent,captureUs,acquireUs,"
                                            "encodeStartUs,encodeEndUs,sendStartUs,sendEndUs";
-
-    class TemporaryDirectory {
-    private:
-        std::filesystem::path directoryPath;
-
-    public:
-        TemporaryDirectory()
-            : directoryPath(std::filesystem::temp_directory_path() /
-                            ("fm-timing-test-" + std::to_string(std::random_device{}()))) {
-            std::filesystem::create_directories(directoryPath);
-        }
-
-        ~TemporaryDirectory() {
-            std::error_code ignored;
-            std::filesystem::remove_all(directoryPath, ignored);
-        }
-
-        TemporaryDirectory(const TemporaryDirectory&) = delete;
-        TemporaryDirectory& operator=(const TemporaryDirectory&) = delete;
-
-        const std::filesystem::path& path() const {
-            return directoryPath;
-        }
-    };
 
     std::vector<std::string> readLines(const std::filesystem::path& path) {
         std::ifstream file(path);

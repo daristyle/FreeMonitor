@@ -18,10 +18,13 @@ namespace fm {
     constexpr std::uint32_t DEFAULT_DISPLAY_HEIGHT = 1080;
     constexpr std::uint32_t MAX_DISPLAY_DIMENSION = 16384;
     constexpr std::uint32_t MAX_REFRESH_RATE_HZ = 240;
+    constexpr std::uint32_t MAX_BITRATE_MBPS = 500;
 
     struct HostOptions {
         std::uint32_t runSeconds = DEFAULT_RUN_SECONDS;
         std::uint8_t jpegQuality = EncoderConfig{}.jpegQuality;
+        EncoderChoice encoder = EncoderChoice::JPEG;
+        std::uint32_t bitrateKbps = EncoderConfig{}.bitrateKbps;
         DisplayMode displayMode{.width = DEFAULT_DISPLAY_WIDTH, .height = DEFAULT_DISPLAY_HEIGHT};
         std::optional<Endpoint> destination;
         std::optional<std::string> timingLogPath;

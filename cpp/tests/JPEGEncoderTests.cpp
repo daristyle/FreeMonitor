@@ -97,8 +97,9 @@ namespace {
 }
 
 TEST_CASE("createEncoder returns the JPEG encoder for JPEG") {
-    const auto encoder = fm::createEncoder(fm::Codec::JPEG);
+    const auto encoder = fm::createEncoder(fm::EncoderChoice::JPEG);
     CHECK(dynamic_cast<fm::JPEGEncoder*>(encoder.get()) != nullptr);
+    CHECK(encoder->description() == "JPEG");
 }
 
 TEST_CASE("JPEG configure rejects bad settings") {
@@ -170,6 +171,7 @@ TEST_CASE("JPEG encode produces a complete JPEG keyframe") {
     CHECK(output.data[output.data.size() - 2] == 0xFF);
     CHECK(output.data[output.data.size() - 1] == 0xD9);
     CHECK(output.data.size() < FRAME_WIDTH * FRAME_HEIGHT * PIXEL_SIZE);
+    CHECK(output.codec == fm::Codec::JPEG);
     CHECK(output.keyframe);
     CHECK(output.captureTime == image.frame.captureTime);
 }

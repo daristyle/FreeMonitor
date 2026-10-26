@@ -52,10 +52,13 @@ if(FM_BUILD_HOST)
         pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
         pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
         pkg_check_modules(TURBOJPEG REQUIRED IMPORTED_TARGET libturbojpeg)
+        pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET libavcodec>=60 libavutil>=58)
     endif()
 
     add_library(fm_platform STATIC
             cpp/src/DisplayLayout.cpp
+            cpp/src/FallbackEncoder.cpp
+            cpp/src/H264Bitstream.cpp
             cpp/src/stub/StubCaptureSource.cpp
             cpp/src/stub/StubEncoder.cpp
             cpp/src/stub/StubVirtualDisplay.cpp
@@ -66,14 +69,19 @@ if(FM_BUILD_HOST)
     else()
         target_sources(fm_platform PRIVATE
                 cpp/src/JPEGEncoder.cpp
+                cpp/src/LibavH264Encoder.cpp
+                cpp/src/NVENCEncoder.cpp
                 cpp/src/linux/HyprlandIPC.cpp
                 cpp/src/linux/HyprlandVirtualDisplay.cpp
                 cpp/src/linux/LinuxBackends.cpp
                 cpp/src/linux/PipeWireCaptureSource.cpp
                 cpp/src/linux/PortalScreenCast.cpp
                 cpp/src/linux/RestoreTokenStore.cpp
+                cpp/src/linux/VAAPIDevices.cpp
+                cpp/src/linux/VAAPIEncoder.cpp
         )
-        target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD PkgConfig::TURBOJPEG)
+        target_link_libraries(fm_platform PRIVATE PkgConfig::PIPEWIRE PkgConfig::SYSTEMD PkgConfig::TURBOJPEG
+                PkgConfig::LIBAV)
     endif()
     target_include_directories(fm_platform
             PUBLIC cpp/include
@@ -118,18 +126,22 @@ if(FM_BUILD_TESTS)
             cpp/tests/FrameTimingLogTests.cpp
             cpp/tests/HostOptionsTests.cpp
             cpp/tests/DisplayLayoutTests.cpp
+            cpp/tests/FallbackEncoderTests.cpp
+            cpp/tests/H264BitstreamTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
                 cpp/tests/FileDescriptorTests.cpp
                 cpp/tests/HyprlandIPCTests.cpp
                 cpp/tests/HyprlandVirtualDisplayTests.cpp
+                cpp/tests/H264EncoderTests.cpp
                 cpp/tests/JPEGEncoderTests.cpp
                 cpp/tests/RestoreTokenStoreTests.cpp
                 cpp/tests/PipeWireFormatTests.cpp
                 cpp/tests/PortalScreenCastTests.cpp
+                cpp/tests/VAAPIDevicesTests.cpp
         )
-        target_link_libraries(fm_tests PRIVATE PkgConfig::PIPEWIRE PkgConfig::TURBOJPEG)
+        target_link_libraries(fm_tests PRIVATE PkgConfig::PIPEWIRE PkgConfig::TURBOJPEG PkgConfig::LIBAV)
     endif()
     target_include_directories(fm_tests PRIVATE cpp/src)
     add_library(fm_test_warnings INTERFACE)

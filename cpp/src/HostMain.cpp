@@ -28,6 +28,7 @@ namespace {
 
     constexpr std::chrono::milliseconds CAPTURE_TIMEOUT{100};
     constexpr std::chrono::seconds REPORT_INTERVAL{1};
+    constexpr std::chrono::milliseconds KEYFRAME_INTERVAL{fm::DEVELOPMENT_KEYFRAME_INTERVAL_MS};
     constexpr int SEND_BUFFER_SIZE = 4 * 1024 * 1024;
     constexpr double BITS_PER_MEGABIT = 1'000'000.0;
     constexpr double BYTES_PER_KILOBYTE = 1024.0;
@@ -93,13 +94,19 @@ namespace {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
             std::println(stderr,
                          "                       [--position right|left|above|below|X,Y] [--destination IPv4:PORT]");
+            std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
             std::println(stderr, "                       [--timing-log FILE]");
-            std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams JPEG in development mode.");
+            std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams video in development mode.");
         } else {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
-            std::println(stderr, "                       [--position right|left|above|below|X,Y] [--timing-log FILE]");
+            std::println(stderr, "                       [--position right|left|above|below|X,Y]");
+            std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
+            std::println(stderr, "                       [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C.");
         }
+        std::println(stderr, "  --encoder auto tries NVENC, then VA-API, then JPEG. The default is jpeg.");
+        std::println(stderr,
+                     "  --bitrate sets the H.264 bitrate in Mbit/s (default 20). --quality sets the JPEG quality.");
         std::println(stderr, "  --timing-log writes one CSV line of stage timestamps per frame.");
     }
 
@@ -137,7 +144,7 @@ int main(int argumentCount, char** arguments) {
         std::random_device randomDevice;
         session = fm::Session{.peer = *options->destination, .sessionId = 0, .nextSeq = randomDevice()};
         videoSender.emplace(*udpSocket, randomDevice());
-        std::print("Development mode: streaming JPEG with sessionId 0 to ");
+        std::print("Development mode: streaming with sessionId 0 to ");
         printEndpoint(*options->destination);
     }
 
@@ -170,10 +177,13 @@ int main(int argumentCount, char** arguments) {
     std::signal(SIGINT, onStopSignal);
     std::signal(SIGTERM, onStopSignal);
 
-    auto encoder = fm::createEncoder(fm::Codec::JPEG);
+    auto encoder = fm::createEncoder(options->encoder);
     fm::EncoderConfig encoderConfig;
     encoderConfig.jpegQuality = options->jpegQuality;
+    encoderConfig.bitrateKbps = options->bitrateKbps;
+    encoderConfig.framesPerSecond = options->displayMode.refreshRateHz;
     bool encoderConfigured = false;
+    std::optional<Clock::time_point> lastKeyframeTime;
 
     const auto startTime = Clock::now();
     const auto deadline =
@@ -216,11 +226,21 @@ int main(int argumentCount, char** arguments) {
                 encoderConfig.width = capturedFrame.width;
                 encoderConfig.height = capturedFrame.height;
                 encoderConfig.inputFormat = capturedFrame.format;
-                encoderConfigured = encoder->configure(encoderConfig).has_value();
+                if (const auto configured = encoder->configure(encoderConfig); !configured) {
+                    std::println(stderr, "Could not set up the encoder: {}", configured.error().message);
+                    captureSource->releaseFrame();
+                    exitCode = 1;
+                    break;
+                }
+                encoderConfigured = true;
+                std::println("Encoding {}x{} with {}", encoderConfig.width, encoderConfig.height,
+                             encoder->description());
+            }
+            if (lastKeyframeTime && acquireTime - *lastKeyframeTime >= KEYFRAME_INTERVAL) {
+                encoder->requestKeyframe();
             }
             const auto encodeStart = Clock::now();
-            const bool encoded = encoderConfigured &&
-                                 encoder->encode(capturedFrame, encodedFrame) == fm::EncodeStatus::FRAME_ENCODED;
+            const bool encoded = encoder->encode(capturedFrame, encodedFrame) == fm::EncodeStatus::FRAME_ENCODED;
             const auto encodeEnd = Clock::now();
             captureSource->releaseFrame();
             ++periodFrames;
@@ -233,13 +253,16 @@ int main(int argumentCount, char** arguments) {
             } else {
                 encodeTimes.add(encodeEnd - encodeStart);
                 encodedSizes.add(encodedFrame.data.size());
+                if (encodedFrame.keyframe) {
+                    lastKeyframeTime = acquireTime;
+                }
                 timing.outcome = fm::FrameOutcome::ENCODED;
-                timing.codec = fm::Codec::JPEG;
+                timing.codec = encodedFrame.codec;
                 timing.keyframe = encodedFrame.keyframe;
                 timing.frameBytes = static_cast<std::uint32_t>(encodedFrame.data.size());
                 if (videoSender) {
                     const auto sendStart = Clock::now();
-                    const auto sendResult = videoSender->send(encodedFrame, fm::Codec::JPEG, session);
+                    const auto sendResult = videoSender->send(encodedFrame, encodedFrame.codec, session);
                     const auto sendEnd = Clock::now();
                     periodPackets += sendResult.packetsSent;
                     periodBytes += sendResult.bytesSent;
@@ -271,7 +294,7 @@ int main(int argumentCount, char** arguments) {
                          frameIntervals.maximumMilliseconds(), captureDelays.averageMilliseconds(),
                          captureDelays.maximumMilliseconds(), encoderConfig.width, encoderConfig.height,
                          encodeFailures);
-            std::println("     | encode avg {:6.2f} max {:6.2f} ms | JPEG avg {:7.1f} max {:7.1f} KB",
+            std::println("     | encode avg {:6.2f} max {:6.2f} ms | frame avg {:7.1f} max {:7.1f} KB",
                          encodeTimes.averageMilliseconds(), encodeTimes.maximumMilliseconds(),
                          encodedSizes.averageKilobytes(), encodedSizes.maximumKilobytes());
             if (videoSender) {

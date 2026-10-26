@@ -13,11 +13,18 @@ namespace fm {
         constexpr std::uint32_t MAX_OCTET = 255;
         constexpr std::uint32_t MAX_PORT = 65535;
         constexpr std::uint32_t MAX_JPEG_QUALITY = 100;
+        constexpr std::uint32_t KILOBITS_PER_MEGABIT = 1000;
         constexpr std::array<std::pair<std::string_view, DisplayPlacement>, 4> NAMED_PLACEMENTS{{
                 {"right", DisplayPlacement::RIGHT},
                 {"left", DisplayPlacement::LEFT},
                 {"above", DisplayPlacement::ABOVE},
                 {"below", DisplayPlacement::BELOW},
+        }};
+        constexpr std::array<std::pair<std::string_view, EncoderChoice>, 4> NAMED_ENCODERS{{
+                {"auto", EncoderChoice::AUTO},
+                {"nvenc", EncoderChoice::NVENC},
+                {"vaapi", EncoderChoice::VAAPI},
+                {"jpeg", EncoderChoice::JPEG},
         }};
 
         std::optional<std::uint32_t> parseNumber(std::string_view text, std::uint32_t maximum) {
@@ -78,6 +85,15 @@ namespace fm {
             mode.positionY = *y;
             return true;
         }
+
+        std::optional<EncoderChoice> parseEncoderChoice(std::string_view text) {
+            for (const auto& [name, choice] : NAMED_ENCODERS) {
+                if (text == name) {
+                    return choice;
+                }
+            }
+            return std::nullopt;
+        }
     }
 
     std::optional<Endpoint> parseEndpoint(std::string_view text) {
@@ -115,7 +131,8 @@ namespace fm {
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const std::string_view option = arguments[i];
             if (option != "--seconds" && option != "--quality" && option != "--destination" && option != "--size" &&
-                option != "--refresh" && option != "--position" && option != "--timing-log") {
+                option != "--refresh" && option != "--position" && option != "--timing-log" && option != "--encoder" &&
+                option != "--bitrate") {
                 return invalidOption("Unknown option " + std::string(option));
             }
             if (i + 1 >= arguments.size()) {
@@ -154,6 +171,18 @@ namespace fm {
                     return invalidOption("--timing-log must be a file path, for example host-timing.csv");
                 }
                 options.timingLogPath = std::string(value);
+            } else if (option == "--encoder") {
+                const auto choice = parseEncoderChoice(value);
+                if (!choice) {
+                    return invalidOption("--encoder must be auto, nvenc, vaapi or jpeg");
+                }
+                options.encoder = *choice;
+            } else if (option == "--bitrate") {
+                const auto bitrate = parseNumber(value, MAX_BITRATE_MBPS);
+                if (!bitrate || *bitrate == 0) {
+                    return invalidOption("--bitrate must be 1 to 500 Mbit/s");
+                }
+                options.bitrateKbps = *bitrate * KILOBITS_PER_MEGABIT;
             } else {
                 if (!developmentModeAllowed) {
                     return invalidOption("--destination is development mode, which a release build does not have");

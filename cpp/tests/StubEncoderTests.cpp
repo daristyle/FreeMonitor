@@ -2,6 +2,7 @@
 #include "stub/StubEncoder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <array>
 #include <cstdint>
@@ -43,9 +44,24 @@ namespace {
     }
 }
 
-TEST_CASE("createEncoder returns an encoder for every codec") {
-    CHECK(fm::createEncoder(fm::Codec::JPEG) != nullptr);
-    CHECK(fm::createEncoder(fm::Codec::H264) != nullptr);
+TEST_CASE("createEncoder returns an encoder for every choice") {
+    CHECK(fm::createEncoder(fm::EncoderChoice::AUTO) != nullptr);
+    CHECK(fm::createEncoder(fm::EncoderChoice::NVENC) != nullptr);
+    CHECK(fm::createEncoder(fm::EncoderChoice::VAAPI) != nullptr);
+    CHECK(fm::createEncoder(fm::EncoderChoice::JPEG) != nullptr);
+}
+
+TEST_CASE("the stub encoder names its codec and marks its frames with it") {
+    const auto pixels = makePaddedPixels();
+    const auto frame = makeFrame(pixels);
+    const auto codec = GENERATE(fm::Codec::JPEG, fm::Codec::H264);
+    fm::StubEncoder encoder(codec);
+    REQUIRE(encoder.configure(makeConfig()));
+
+    fm::EncodedFrame output;
+    REQUIRE(encoder.encode(frame, output) == fm::EncodeStatus::FRAME_ENCODED);
+    CHECK(output.codec == codec);
+    CHECK(encoder.description() == (codec == fm::Codec::JPEG ? "stub JPEG" : "stub H.264"));
 }
 
 TEST_CASE("configure rejects bad settings") {

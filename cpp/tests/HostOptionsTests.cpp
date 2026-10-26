@@ -40,6 +40,24 @@ TEST_CASE("parseHostOptions uses the defaults without arguments") {
     CHECK(options->displayMode.placement == fm::DisplayPlacement::RIGHT);
     CHECK_FALSE(options->timingLogPath);
     CHECK_FALSE(options->destination);
+    CHECK(options->encoder == fm::EncoderChoice::JPEG);
+    CHECK(options->bitrateKbps == fm::EncoderConfig{}.bitrateKbps);
+}
+
+TEST_CASE("parseHostOptions reads the encoder choice") {
+    const auto [text, choice] =
+            GENERATE(std::pair{"auto", fm::EncoderChoice::AUTO}, std::pair{"nvenc", fm::EncoderChoice::NVENC},
+                     std::pair{"vaapi", fm::EncoderChoice::VAAPI}, std::pair{"jpeg", fm::EncoderChoice::JPEG});
+    CAPTURE(text);
+    const auto options = parse({"--encoder", text});
+    REQUIRE(options);
+    CHECK(options->encoder == choice);
+}
+
+TEST_CASE("parseHostOptions reads the bitrate in Mbit/s") {
+    CHECK(parse({"--bitrate", "1"})->bitrateKbps == 1000);
+    CHECK(parse({"--bitrate", "35"})->bitrateKbps == 35000);
+    CHECK(parse({"--bitrate", "500"})->bitrateKbps == 500000);
 }
 
 TEST_CASE("parseHostOptions reads the virtual monitor's size, refresh rate and position") {
@@ -87,7 +105,11 @@ TEST_CASE("parseHostOptions rejects bad arguments") {
             std::vector<std::string_view>{"--refresh", "241"}, std::vector<std::string_view>{"--position", "middle"},
             std::vector<std::string_view>{"--position", "1920"}, std::vector<std::string_view>{"--position", "1920,"},
             std::vector<std::string_view>{"--position", "Right"}, std::vector<std::string_view>{"--position", "1e3,0"},
-            std::vector<std::string_view>{"--timing-log"}, std::vector<std::string_view>{"--timing-log", ""});
+            std::vector<std::string_view>{"--timing-log"}, std::vector<std::string_view>{"--timing-log", ""},
+            std::vector<std::string_view>{"--encoder", "x264"}, std::vector<std::string_view>{"--encoder", "NVENC"},
+            std::vector<std::string_view>{"--encoder", ""}, std::vector<std::string_view>{"--bitrate", "0"},
+            std::vector<std::string_view>{"--bitrate", "501"}, std::vector<std::string_view>{"--bitrate", "2.5"},
+            std::vector<std::string_view>{"--bitrate", "fast"});
     const auto options = parse(arguments);
     REQUIRE_FALSE(options);
     CHECK(options.error().code == fm::ErrorCode::INVALID_ARGUMENT);
@@ -101,4 +123,5 @@ TEST_CASE("--destination is refused when development mode is not allowed") {
 
     CHECK(parse({"--seconds", "5", "--quality", "70"}, false));
     CHECK(parse({"--timing-log", "host-timing.csv"}, false));
+    CHECK(parse({"--encoder", "auto", "--bitrate", "30"}, false));
 }

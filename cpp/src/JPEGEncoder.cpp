@@ -93,12 +93,17 @@ namespace fm {
         }
 
         output.data = std::span<const std::uint8_t>(outputBuffer).first(jpegSize);
+        output.codec = Codec::JPEG;
         output.keyframe = true;
         output.captureTime = input.captureTime;
         return EncodeStatus::FRAME_ENCODED;
     }
 
     void JPEGEncoder::requestKeyframe() noexcept {}
+
+    std::string_view JPEGEncoder::description() const noexcept {
+        return "JPEG";
+    }
 
     bool JPEGEncoder::compress(const CapturedFrame& input, int quality, std::size_t& jpegSize) noexcept {
         if (::tj3Set(handle.get(), TJPARAM_QUALITY, quality) != 0) {

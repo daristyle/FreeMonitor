@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Packets.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <span>
@@ -30,6 +32,7 @@ namespace fm {
 
     struct EncodedFrame {
         std::span<const std::uint8_t> data;
+        Codec codec = Codec::JPEG;
         bool keyframe = false;
         std::chrono::steady_clock::time_point captureTime;
     };
