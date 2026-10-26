@@ -1,3 +1,7 @@
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14"]
+build-backend = "uv_build"
+
 [project]
 name = "freemonitor-tools"
 version = "0.1.0"
@@ -12,6 +16,10 @@ dev = [
     "ruff>=0.17.0",
 ]
 
+[tool.uv.build-backend]
+module-name = ["freemonitor", "tools"]
+module-root = ""
+
 [tool.ruff]                                                                     
 line-length = 120                                                               
                                                                                   
@@ -21,4 +29,3 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.pytest.ini_options]                                                       
 testpaths = ["tests"]                                                           
 python_files = ["*Tests.py"]
-pythonpath = ["."]
