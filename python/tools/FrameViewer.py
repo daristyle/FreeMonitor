@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from PIL import Image, ImageTk
 
-from freemonitor.Packets import MAGIC, SESSION_TIMEOUT_MS, Codec, CommonHeader, FragmentFlags, PacketType
+from freemonitor.Packets import HOST_PORT, MAGIC, SESSION_TIMEOUT_MS, Codec, CommonHeader, FragmentFlags, PacketType
 from freemonitor.Reassembler import Frame, Reassembler
 
 RECEIVE_BUFFER_SIZE = 8 * 1024 * 1024
@@ -40,10 +40,21 @@ def fitImage(image: Image.Image, width: int, height: int) -> Image.Image:
     return image.resize(size, Image.Resampling.BILINEAR)
 
 
+def receiveBufferWarning(receiveBufferSize: int) -> str | None:
+    if receiveBufferSize >= RECEIVE_BUFFER_SIZE:
+        return None
+    return (
+        f"Warning: the receive buffer is {receiveBufferSize} bytes, less than the {RECEIVE_BUFFER_SIZE} requested. "
+        "Frames that arrive as one burst may be dropped. "
+        f"Raise net.core.rmem_max: sudo sysctl -w net.core.rmem_max={RECEIVE_BUFFER_SIZE}"
+    )
+
+
 class FrameReceiver:
     def __init__(self, bindAddress: tuple[str, int], clock: Callable[[], int] = time.monotonic_ns):
         self.udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udpSocket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECEIVE_BUFFER_SIZE)
+        self.receiveBufferSize = self.udpSocket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         self.udpSocket.bind(bindAddress)
         self.udpSocket.setblocking(False)
         self.clock = clock
@@ -170,7 +181,7 @@ class FrameViewer:
 
 def parseArguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Shows FreeMonitor development-mode video (session ID 0).")
-    parser.add_argument("--port", type=int, required=True, help="UDP port to receive on")
+    parser.add_argument("--port", type=int, default=HOST_PORT, help=f"UDP port to receive on (default {HOST_PORT})")
     parser.add_argument("--bind", default="0.0.0.0", help="local IPv4 address to receive on")
     return parser.parse_args(argv)
 
@@ -178,6 +189,9 @@ def parseArguments(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     arguments = parseArguments(argv)
     receiver = FrameReceiver((arguments.bind, arguments.port))
+    warning = receiveBufferWarning(receiver.receiveBufferSize)
+    if warning is not None:
+        print(warning, file=sys.stderr)
     try:
         FrameViewer(receiver).run()
     finally:

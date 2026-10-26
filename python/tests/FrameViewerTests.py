@@ -8,8 +8,15 @@ import time
 from PIL import Image
 
 from freemonitor.Fragmenter import Fragmenter
-from freemonitor.Packets import SESSION_TIMEOUT_MS, Codec, CursorPos, FragmentFlags
-from tools.FrameViewer import FrameReceiver, decodeJPEG, fitImage
+from freemonitor.Packets import HOST_PORT, SESSION_TIMEOUT_MS, Codec, CursorPos, FragmentFlags
+from tools.FrameViewer import (
+    RECEIVE_BUFFER_SIZE,
+    FrameReceiver,
+    decodeJPEG,
+    fitImage,
+    parseArguments,
+    receiveBufferWarning,
+)
 from tools.LossEmulator import Impairment, LossEmulator
 
 LOCALHOST = "127.0.0.1"
@@ -118,3 +125,24 @@ def testSenderRestartWithOlderFrameIdsIsDetected():
     finally:
         receiver.close()
     assert receiver.senderRestarts == 1
+
+
+def testPortDefaultsToHostPort():
+    assert parseArguments([]).port == HOST_PORT
+    assert parseArguments(["--port", "6000"]).port == 6000
+
+
+def testReceiverRecordsTheBufferSizeTheKernelGranted():
+    receiver = FrameReceiver((LOCALHOST, 0))
+    try:
+        assert receiver.receiveBufferSize == receiver.udpSocket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    finally:
+        receiver.close()
+
+
+def testReceiveBufferWarningOnlyForASmallerBuffer():
+    assert receiveBufferWarning(RECEIVE_BUFFER_SIZE) is None
+    assert receiveBufferWarning(2 * RECEIVE_BUFFER_SIZE) is None
+    warning = receiveBufferWarning(425_984)
+    assert "425984 bytes" in warning
+    assert f"net.core.rmem_max={RECEIVE_BUFFER_SIZE}" in warning
