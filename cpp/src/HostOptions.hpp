@@ -23,7 +23,7 @@ namespace fm {
     struct HostOptions {
         std::uint32_t runSeconds = DEFAULT_RUN_SECONDS;
         std::uint8_t jpegQuality = EncoderConfig{}.jpegQuality;
-        EncoderChoice encoder = EncoderChoice::JPEG;
+        EncoderChoice encoder = EncoderChoice::AUTO;
         std::uint32_t bitrateKbps = EncoderConfig{}.bitrateKbps;
         DisplayMode displayMode{.width = DEFAULT_DISPLAY_WIDTH, .height = DEFAULT_DISPLAY_HEIGHT};
         std::optional<Endpoint> destination;

@@ -13,13 +13,22 @@ class FrameRenderer(
     private val receiver: FrameReceiver,
     private val timingLog: FrameTimingLog?,
     private val onStatus: (RenderStatus) -> Unit,
+    private val onVideoSize: (VideoSize) -> Unit,
+    private val onCodecChanged: () -> Unit,
 ) {
     private val frameBuffer = ByteArray(NativeBridge.maxFrameSize())
     private val frameInfo = FrameInfo()
     private val decodeOptions = BitmapFactory.Options()
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val destination = Rect()
+    private val keyframeGate = KeyframeGate()
     private var bitmap: Bitmap? = null
+    private var codec: Codec? = null
+    private var h264Decoder: H264Decoder? = null
+    private var codecChangeReported = false
+    private var jpegFramesShown = 0
+    private var framesWaitingForKeyframe = 0
+    private var lastJPEGFrameMs = NO_FRAME
 
     @Volatile
     private var running = false
@@ -37,36 +46,81 @@ class FrameRenderer(
         running = false
         thread?.join()
         thread = null
+        h264Decoder?.close()
+        h264Decoder = null
     }
 
     private fun renderLoop() {
-        var framesShown = 0
-        var notJPEGFrames = 0
         var lastStatus = SystemClock.elapsedRealtime()
-        var lastFrame: Long? = null
         while (running) {
             val length = receiver.nextFrame(frameBuffer, frameInfo, WAIT_TIMEOUT_MS)
-            val acquireUs = nowUs()
-            if (length == FrameReceiver.NOT_JPEG) {
-                ++notJPEGFrames
-                timingLog?.record(frameInfo, FrameTimingLog.Outcome.NOT_JPEG, acquireUs, 0, 0, 0)
-            } else if (length > 0 && showFrame(length, acquireUs)) {
-                ++framesShown
-                lastFrame = SystemClock.elapsedRealtime()
+            if (length > 0) {
+                handleFrame(length, nowUs())
             }
             val now = SystemClock.elapsedRealtime()
             if (now - lastStatus >= STATUS_INTERVAL_MS) {
+                val framesShown = jpegFramesShown + (h264Decoder?.takeShownFrameCount() ?: 0)
+                val lastFrame = h264Decoder?.lastShownElapsedMs ?: lastJPEGFrameMs.takeIf { it != NO_FRAME }
                 onStatus(
                     RenderStatus(
                         framesPerSecond = framesShown * MILLISECONDS_PER_SECOND / (now - lastStatus),
                         millisecondsSinceLastFrame = lastFrame?.let { now - it },
-                        notJPEGFrames = notJPEGFrames,
+                        codec = codec,
+                        framesWaitingForKeyframe = framesWaitingForKeyframe,
                         statistics = receiver.statistics(),
                     ),
                 )
-                framesShown = 0
+                jpegFramesShown = 0
                 lastStatus = now
             }
+        }
+    }
+
+    private fun handleFrame(
+        length: Int,
+        acquireUs: Long,
+    ) {
+        val frameCodec = frameInfo.codec
+        if (frameCodec == Codec.UNSUPPORTED) {
+            timingLog?.record(frameInfo, FrameTimingLog.Outcome.UNSUPPORTED_CODEC, acquireUs, 0, 0, 0)
+            return
+        }
+        val surfaceCodec = codec ?: frameCodec.also { codec = it }
+        if (frameCodec != surfaceCodec) {
+            if (!codecChangeReported) {
+                codecChangeReported = true
+                onCodecChanged()
+            }
+            timingLog?.record(frameInfo, FrameTimingLog.Outcome.NOT_DRAWN, acquireUs, 0, 0, 0)
+            return
+        }
+        if (frameCodec == Codec.JPEG) {
+            if (showFrame(length, acquireUs)) {
+                ++jpegFramesShown
+                lastJPEGFrameMs = SystemClock.elapsedRealtime()
+            }
+        } else {
+            decodeH264(length, acquireUs)
+        }
+    }
+
+    private fun decodeH264(
+        length: Int,
+        acquireUs: Long,
+    ) {
+        if (!keyframeGate.accept(frameInfo.frameId, frameInfo.keyframe)) {
+            ++framesWaitingForKeyframe
+            timingLog?.record(frameInfo, FrameTimingLog.Outcome.WAITING_FOR_KEYFRAME, acquireUs, 0, 0, 0)
+            return
+        }
+        val decoder =
+            h264Decoder
+                ?: H264Decoder(surfaceHolder.surface, frameBuffer.size, timingLog, onVideoSize).also {
+                    h264Decoder = it
+                }
+        if (!decoder.decode(frameBuffer, length, frameInfo, acquireUs)) {
+            keyframeGate.reset()
+            timingLog?.record(frameInfo, FrameTimingLog.Outcome.DECODE_FAILED, acquireUs, 0, 0, 0)
         }
     }
 
@@ -129,6 +183,7 @@ class FrameRenderer(
 
     private companion object {
         const val RENDER_THREAD_NAME = "FreeMonitor render"
+        const val NO_FRAME = -1L
         const val WAIT_TIMEOUT_MS = 100
         const val STATUS_INTERVAL_MS = 1000L
         const val MILLISECONDS_PER_SECOND = 1000f

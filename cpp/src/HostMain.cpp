@@ -104,7 +104,7 @@ namespace {
             std::println(stderr, "                       [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C.");
         }
-        std::println(stderr, "  --encoder auto tries NVENC, then VA-API, then JPEG. The default is jpeg.");
+        std::println(stderr, "  --encoder auto tries NVENC, then VA-API, then JPEG. It is the default.");
         std::println(stderr,
                      "  --bitrate sets the H.264 bitrate in Mbit/s (default 20). --quality sets the JPEG quality.");
         std::println(stderr, "  --timing-log writes one CSV line of stage timestamps per frame.");

@@ -4,5 +4,6 @@
     <string name="waiting_for_host">FreeMonitor\nWaiting for the host on %1$s:%2$d</string>
     <string name="unknown_address">this tablet\'s IP</string>
     <string name="receiver_failed">Cannot receive on port %1$d: %2$s</string>
-    <string name="render_status">%1$.0f fps · dropped %2$d · replaced %3$d · invalid %4$d · not JPEG %5$d</string>
+    <string name="render_status">%1$.0f fps · %2$s · dropped %3$d · replaced %4$d · invalid %5$d · waiting for keyframe %6$d</string>
+    <string name="no_codec">no video yet</string>
 </resources>

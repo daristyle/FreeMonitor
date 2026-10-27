@@ -23,12 +23,24 @@ class FrameReceiverTests {
 
     @Test
     fun aFrameSentOverLoopbackComesOutWithItsInfo() {
+        receiveOneFrame(JPEG, Codec.JPEG)
+    }
+
+    @Test
+    fun anH264FrameComesOutWithItsDataAndCodec() {
+        receiveOneFrame(H264, Codec.H264)
+    }
+
+    private fun receiveOneFrame(
+        codecId: Byte,
+        codec: Codec,
+    ) {
         val port = DatagramSocket(ANY_FREE_PORT).use { it.localPort }
         FrameReceiver(port).use { receiver ->
             val payload = ByteArray(PAYLOAD_SIZE) { (it * 7).toByte() }
             val sentUs = nowUs()
             DatagramSocket().use { sender ->
-                val packet = videoFragment(FRAME_ID, CAPTURE_US, sentUs, payload)
+                val packet = videoFragment(FRAME_ID, CAPTURE_US, sentUs, codecId, payload)
                 sender.send(DatagramPacket(packet, packet.size, InetAddress.getByName(IPV4_LOOPBACK), port))
             }
 
@@ -45,6 +57,7 @@ class FrameReceiverTests {
             assertEquals(CAPTURE_US, info.hostCaptureUs)
             assertTrue(info.firstFragmentUs in sentUs..info.completeUs)
             assertTrue(info.completeUs <= acquiredUs)
+            assertEquals(codec, info.codec)
         }
     }
 
@@ -72,6 +85,7 @@ class FrameReceiverTests {
         frameId: Int,
         captureUs: Long,
         timestampUs: Long,
+        codecId: Byte,
         payload: ByteArray,
     ): ByteArray =
         ByteBuffer
@@ -87,7 +101,7 @@ class FrameReceiverTests {
             .putShort(0)
             .putShort(1)
             .putInt(payload.size)
-            .put(JPEG)
+            .put(codecId)
             .put(KEYFRAME_FLAG)
             .putShort(0)
             .putLong(captureUs)
@@ -111,6 +125,7 @@ class FrameReceiverTests {
         const val DEVELOPMENT_SESSION_ID = 0
         const val FIRST_SEQ = 1
         const val JPEG: Byte = 0
+        const val H264: Byte = 1
         const val KEYFRAME_FLAG: Byte = 1
         const val NANOSECONDS_PER_MICROSECOND = 1000L
     }

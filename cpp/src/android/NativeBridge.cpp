@@ -17,9 +17,8 @@ namespace fm {
         constexpr const char* ILLEGAL_STATE_EXCEPTION = "java/lang/IllegalStateException";
         constexpr std::uint32_t DEVELOPMENT_SESSION_ID = 0;
         constexpr jint MAX_PORT = 65535;
-        constexpr jint NOT_JPEG = -1;
         constexpr jsize STATISTICS_COUNT = 7;
-        constexpr jsize FRAME_INFO_COUNT = 6;
+        constexpr jsize FRAME_INFO_COUNT = 7;
 
         FrameReceiver* toReceiver(jlong handle) {
             return reinterpret_cast<FrameReceiver*>(static_cast<std::intptr_t>(handle));
@@ -78,26 +77,21 @@ namespace fm {
                     static_cast<jlong>(frame.captureTimestampUs),
                     static_cast<jlong>(toTimestampUs(frame.firstFragmentTime)),
                     static_cast<jlong>(toTimestampUs(frame.completeTime)),
+                    static_cast<jlong>(frame.codec),
             };
             environment->SetLongArrayRegion(frameInfo, 0, FRAME_INFO_COUNT, info.data());
-            jint result = NOT_JPEG;
-            bool destinationTooSmall = false;
-            if (frame.codec == Codec::JPEG) {
-                const auto length = static_cast<jsize>(frame.data.size());
-                if (length <= environment->GetArrayLength(destination)) {
-                    environment->SetByteArrayRegion(destination, 0, length,
-                                                    reinterpret_cast<const jbyte*>(frame.data.data()));
-                    result = length;
-                } else {
-                    destinationTooSmall = true;
-                }
+            const auto length = static_cast<jsize>(frame.data.size());
+            const bool fits = length <= environment->GetArrayLength(destination);
+            if (fits) {
+                environment->SetByteArrayRegion(destination, 0, length,
+                                                reinterpret_cast<const jbyte*>(frame.data.data()));
             }
             receiver->release();
-            if (destinationTooSmall) {
+            if (!fits) {
                 throwIllegalState(environment, "The frame buffer is smaller than the frame");
                 return 0;
             }
-            return result;
+            return length;
         }
 
         jlongArray receiverStatistics(JNIEnv* environment, jclass, jlong handle) {

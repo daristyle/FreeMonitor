@@ -16,6 +16,7 @@ class FrameTimingLog(
     private val head = AtomicLong()
     private val tail = AtomicLong()
     private val droppedRecords = AtomicLong()
+    private val recordLock = Any()
     private val stopSignal = CountDownLatch(1)
     private val writerThread = Thread(::writeLoop, WRITER_THREAD_NAME)
     private var closed = false
@@ -27,7 +28,8 @@ class FrameTimingLog(
         SHOWN,
         NOT_DRAWN,
         DECODE_FAILED,
-        NOT_JPEG,
+        UNSUPPORTED_CODEC,
+        WAITING_FOR_KEYFRAME,
     }
 
     val droppedRecordCount: Long
@@ -55,24 +57,26 @@ class FrameTimingLog(
         decodeEndUs: Long,
         postUs: Long,
     ) {
-        val writeIndex = head.get()
-        if (writeIndex - tail.get() == CAPACITY.toLong()) {
-            droppedRecords.incrementAndGet()
-            return
+        synchronized(recordLock) {
+            val writeIndex = head.get()
+            if (writeIndex - tail.get() == CAPACITY.toLong()) {
+                droppedRecords.incrementAndGet()
+                return
+            }
+            val base = (writeIndex % CAPACITY).toInt() * FIELD_COUNT
+            records[base + FRAME_ID] = info.frameId
+            records[base + OUTCOME] = outcome.ordinal.toLong()
+            records[base + KEYFRAME] = if (info.keyframe) 1L else 0L
+            records[base + FRAME_BYTES] = info.frameBytes.toLong()
+            records[base + HOST_CAPTURE_US] = info.hostCaptureUs
+            records[base + FIRST_FRAGMENT_US] = info.firstFragmentUs
+            records[base + COMPLETE_US] = info.completeUs
+            records[base + ACQUIRE_US] = acquireUs
+            records[base + DECODE_START_US] = decodeStartUs
+            records[base + DECODE_END_US] = decodeEndUs
+            records[base + POST_US] = postUs
+            head.set(writeIndex + 1)
         }
-        val base = (writeIndex % CAPACITY).toInt() * FIELD_COUNT
-        records[base + FRAME_ID] = info.frameId
-        records[base + OUTCOME] = outcome.ordinal.toLong()
-        records[base + KEYFRAME] = if (info.keyframe) 1L else 0L
-        records[base + FRAME_BYTES] = info.frameBytes.toLong()
-        records[base + HOST_CAPTURE_US] = info.hostCaptureUs
-        records[base + FIRST_FRAGMENT_US] = info.firstFragmentUs
-        records[base + COMPLETE_US] = info.completeUs
-        records[base + ACQUIRE_US] = acquireUs
-        records[base + DECODE_START_US] = decodeStartUs
-        records[base + DECODE_END_US] = decodeEndUs
-        records[base + POST_US] = postUs
-        head.set(writeIndex + 1)
     }
 
     override fun close() {

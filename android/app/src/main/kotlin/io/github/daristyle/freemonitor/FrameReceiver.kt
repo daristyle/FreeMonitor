@@ -25,8 +25,4 @@ class FrameReceiver(
             handle = 0L
         }
     }
-
-    companion object {
-        const val NOT_JPEG = -1
-    }
 }

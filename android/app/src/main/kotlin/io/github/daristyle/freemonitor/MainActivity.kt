@@ -22,8 +22,10 @@ import java.time.format.DateTimeFormatter
 class MainActivity :
     Activity(),
     SurfaceHolder.Callback {
+    private lateinit var container: FrameLayout
     private lateinit var waitingView: TextView
     private lateinit var statusView: TextView
+    private var surfaceView: SurfaceView? = null
     private var receiver: FrameReceiver? = null
     private var timingLog: FrameTimingLog? = null
     private var renderer: FrameRenderer? = null
@@ -32,7 +34,6 @@ class MainActivity :
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val surfaceView = SurfaceView(this).also { it.holder.addCallback(this) }
         waitingView =
             TextView(this).apply {
                 gravity = Gravity.CENTER
@@ -47,17 +48,17 @@ class MainActivity :
                 val padding = (STATUS_PADDING_DP * resources.displayMetrics.density).toInt()
                 setPadding(padding, padding, padding, padding)
             }
-        setContentView(
+        container =
             FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
-                addView(surfaceView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 addView(waitingView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 addView(
                     statusView,
                     FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.START),
                 )
-            },
-        )
+            }
+        setContentView(container)
+        addSurfaceView()
         window.insetsController?.let { controller ->
             controller.hide(WindowInsets.Type.systemBars())
             controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -75,7 +76,16 @@ class MainActivity :
             }
         receiver = newReceiver
         timingLog = if (intent.getBooleanExtra(TIMING_LOG_EXTRA, false)) openTimingLog() else null
-        renderer = FrameRenderer(holder, newReceiver, timingLog, ::onRenderStatus).also { it.start() }
+        val view = surfaceView
+        renderer =
+            FrameRenderer(
+                holder,
+                newReceiver,
+                timingLog,
+                ::onRenderStatus,
+                onVideoSize = { size -> container.post { fitSurfaceView(view, size) } },
+                onCodecChanged = { container.post { replaceSurfaceView(view) } },
+            ).also { it.start() }
     }
 
     override fun surfaceChanged(
@@ -115,6 +125,31 @@ class MainActivity :
         }
     }
 
+    private fun addSurfaceView() {
+        val view = SurfaceView(this).also { it.holder.addCallback(this) }
+        container.addView(view, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        surfaceView = view
+    }
+
+    private fun replaceSurfaceView(view: SurfaceView?) {
+        if (view == null || view !== surfaceView) {
+            return
+        }
+        container.removeView(view)
+        addSurfaceView()
+    }
+
+    private fun fitSurfaceView(
+        view: SurfaceView?,
+        size: VideoSize,
+    ) {
+        if (view == null || view !== surfaceView || container.width == 0 || container.height == 0) {
+            return
+        }
+        val fit = FitRectangle.fit(size.width, size.height, container.width, container.height)
+        view.layoutParams = FrameLayout.LayoutParams(fit.width, fit.height, Gravity.CENTER)
+    }
+
     private fun showWaiting() {
         val address = NetworkAddress.localIPAddress(this) ?: getString(R.string.unknown_address)
         waitingView.text = getString(R.string.waiting_for_host, address, RECEIVE_PORT)
@@ -133,10 +168,11 @@ class MainActivity :
                     getString(
                         R.string.render_status,
                         status.framesPerSecond,
+                        status.codec?.label ?: getString(R.string.no_codec),
                         status.statistics.framesDropped,
                         status.statistics.framesReplaced,
                         status.statistics.invalidPackets,
-                        status.notJPEGFrames,
+                        status.framesWaitingForKeyframe,
                     )
             }
         }

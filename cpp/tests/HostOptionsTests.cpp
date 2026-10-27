@@ -40,7 +40,7 @@ TEST_CASE("parseHostOptions uses the defaults without arguments") {
     CHECK(options->displayMode.placement == fm::DisplayPlacement::RIGHT);
     CHECK_FALSE(options->timingLogPath);
     CHECK_FALSE(options->destination);
-    CHECK(options->encoder == fm::EncoderChoice::JPEG);
+    CHECK(options->encoder == fm::EncoderChoice::AUTO);
     CHECK(options->bitrateKbps == fm::EncoderConfig{}.bitrateKbps);
 }
 
