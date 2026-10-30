@@ -18,7 +18,7 @@ jobs:
         run: >-
           dnf install -y
           clang-tools-extra cmake findutils gcc-c++ git gzip libavcodec-free-devel libavutil-free-devel
-          make pipewire-devel pkgconf-pkg-config systemd-devel tar turbojpeg-devel
+          make pipewire-devel pkgconf-pkg-config python3-tkinter systemd-devel tar turbojpeg-devel
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.3.3
         with:
@@ -81,6 +81,6 @@ jobs:
           java-version: "17"
           cache: gradle
       - name: Install Android SDK packages
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" "ndk;30.0.16248370" "cmake;4.1.2"
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "ndk;30.0.16248370" "cmake;4.1.2"
       - name: Lint, build and run unit tests
         run: ./gradlew ktlintCheck assembleDebug testDebugUnitTest
