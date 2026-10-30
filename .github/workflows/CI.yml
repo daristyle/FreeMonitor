@@ -17,7 +17,7 @@ jobs:
       - name: Install packages
         run: >-
           dnf install -y
-          clang-tools-extra cmake findutils gcc-c++ git gzip libavcodec-free-devel libavutil-free-devel
+          ShellCheck clang-tools-extra cmake findutils gcc-c++ git gzip libavcodec-free-devel libavutil-free-devel
           make pipewire-devel pkgconf-pkg-config python3-tkinter systemd-devel tar turbojpeg-devel
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.3.3
@@ -42,6 +42,8 @@ jobs:
       - name: Check Python formatting
         working-directory: python
         run: uv run ruff format --check .
+      - name: Check shell scripts
+        run: shellcheck scripts/*.sh
       - name: Check C++ formatting
         run: find cpp \( -name '*.hpp' -o -name '*.cpp' -o -name '*.tpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
 
