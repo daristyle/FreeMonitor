@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  fedora:
+    name: Fedora
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Install packages
+        run: >-
+          dnf install -y
+          clang-tools-extra cmake findutils gcc-c++ git gzip libavcodec-free-devel libavutil-free-devel
+          make pipewire-devel pkgconf-pkg-config systemd-devel tar turbojpeg-devel
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.0"
+          working-directory: python
+      - name: Configure C++
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DFM_WARNINGS_AS_ERRORS=ON
+      - name: Build C++
+        run: cmake --build build --parallel
+      - name: Run C++ tests
+        run: ./build/fm_tests
+      - name: Install Python tools
+        working-directory: python
+        run: uv sync --locked
+      - name: Run Python tests
+        working-directory: python
+        run: uv run pytest
+      - name: Check Python lint
+        working-directory: python
+        run: uv run ruff check .
+      - name: Check Python formatting
+        working-directory: python
+        run: uv run ruff format --check .
+      - name: Check C++ formatting
+        run: find cpp \( -name '*.hpp' -o -name '*.cpp' -o -name '*.tpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.0"
+          working-directory: python
+      - name: Configure C++
+        run: cmake -S . -B build
+      - name: Build C++
+        run: cmake --build build --config Debug --parallel
+      - name: Run C++ tests
+        run: .\build\Debug\fm_tests.exe
+      - name: Install Python tools
+        working-directory: python
+        run: uv sync --locked
+      - name: Run Python tests
+        working-directory: python
+        run: uv run pytest
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Install Android SDK packages
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" "ndk;30.0.16248370" "cmake;4.1.2"
+      - name: Lint, build and run unit tests
+        run: ./gradlew ktlintCheck assembleDebug testDebugUnitTest
