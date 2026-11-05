@@ -121,7 +121,7 @@ TEST_CASE("a session comes up and stays up with 20% loss in both directions") {
     CHECK(simulation.listener.ended.empty());
     const auto report = simulation.host.report();
     REQUIRE(report);
-    CHECK(report->roundTripTime);
+    CHECK(report->clockSample);
     CHECK(report->stats);
     CHECK(simulation.tablet.roundTripTime());
 }

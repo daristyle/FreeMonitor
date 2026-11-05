@@ -72,6 +72,40 @@ TEST_CASE("a timing log starts with its header and writes one row per frame") {
     CHECK(log->droppedRecordCount() == 0);
 }
 
+TEST_CASE("clock samples go to their own file and leave the frame rows alone") {
+    const TemporaryDirectory directory;
+    const auto path = directory.path() / "host-timing.csv";
+    auto log = openLog(path, NEVER_FLUSH);
+
+    log->record(fm::FrameTiming{.frameId = 7, .captureUs = 100});
+    log->record(fm::ClockSample{.receivedTime = std::chrono::steady_clock::time_point{} + 5000us,
+                                .roundTripTime = 300us,
+                                .peerClockOffset = -2000us});
+    log->record(fm::FrameTiming{.frameId = 8, .captureUs = 200});
+    REQUIRE(log->close());
+
+    CHECK(readLines(directory.path() / "host-timing.clock.csv") ==
+          std::vector<std::string>{"# freemonitor-clock 1 host", "receivedUs,offsetUs,rttUs", "5000,-2000,300"});
+    const auto lines = readLines(path);
+    REQUIRE(lines.size() == 4);
+    CHECK(lines[2].starts_with("7,"));
+    CHECK(lines[3].starts_with("8,"));
+}
+
+TEST_CASE("a clock log that cannot be written is named in the error") {
+    const TemporaryDirectory directory;
+    std::filesystem::create_directory(directory.path() / "host-timing.clock.csv");
+
+    const auto log = fm::FrameTimingLog::open(directory.path() / "host-timing.csv");
+    REQUIRE_FALSE(log);
+    CHECK(log.error().message.find("host-timing.clock.csv") != std::string::npos);
+}
+
+TEST_CASE("the clock log sits next to the timing log") {
+    CHECK(fm::clockLogPath("logs/host.csv") == std::filesystem::path("logs/host.clock.csv"));
+    CHECK(fm::clockLogPath("host") == std::filesystem::path("host.clock.csv"));
+}
+
 TEST_CASE("a full timing log drops records instead of blocking") {
     const TemporaryDirectory directory;
     const auto path = directory.path() / "host-timing.csv";

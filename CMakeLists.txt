@@ -152,6 +152,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/ControlLoopbackTests.cpp
             cpp/tests/UDPControlTransportTests.cpp
             cpp/tests/EndpointParsingTests.cpp
+            cpp/tests/HeartbeatEchoTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE

@@ -193,7 +193,7 @@ namespace fm {
         if (client == nullptr) {
             return std::nullopt;
         }
-        return TabletReport{.roundTripTime = client->heartbeatEcho.roundTripTime(), .stats = client->lastStats};
+        return TabletReport{.stats = client->lastStats, .clockSample = client->heartbeatEcho.clockSample()};
     }
 
     void HostSessions::close(std::chrono::steady_clock::time_point now) noexcept {

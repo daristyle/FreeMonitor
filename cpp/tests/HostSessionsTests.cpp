@@ -122,7 +122,9 @@ TEST_CASE("the host sends a heartbeat every 500 ms that echoes the tablet's and 
                                TABLET_ADDRESS, START + 600ms);
     const auto report = host.sessions.report();
     REQUIRE(report);
-    CHECK(report->roundTripTime == std::chrono::microseconds(70'000));
+    REQUIRE(report->clockSample);
+    CHECK(report->clockSample->receivedTime == START + 600ms);
+    CHECK(report->clockSample->roundTripTime == std::chrono::microseconds(70'000));
 
     host.sessions.poll(START + 1000ms);
     const auto second = host.transport.ofType(fm::PacketType::HEARTBEAT);

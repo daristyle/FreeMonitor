@@ -35,8 +35,8 @@ namespace fm {
     };
 
     struct TabletReport {
-        std::optional<std::chrono::microseconds> roundTripTime;
         std::optional<Stats> stats;
+        std::optional<ClockSample> clockSample;
     };
 
     struct StatsDifference {

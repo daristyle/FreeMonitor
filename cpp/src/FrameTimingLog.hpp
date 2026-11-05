@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Error.hpp"
+#include "HeartbeatEcho.hpp"
 #include "Packets.hpp"
 
 #include <array>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <semaphore>
 #include <thread>
+#include <variant>
 
 namespace fm {
     constexpr std::size_t FRAME_TIMING_LOG_CAPACITY = 1024;
@@ -41,18 +43,24 @@ namespace fm {
         std::uint64_t sendEndUs = 0;
     };
 
+    std::filesystem::path clockLogPath(const std::filesystem::path& timingLogPath);
+
     class FrameTimingLog {
     private:
+        using Record = std::variant<FrameTiming, ClockSample>;
+
         std::ofstream file;
+        std::ofstream clockFile;
         std::chrono::milliseconds flushInterval;
-        std::array<FrameTiming, FRAME_TIMING_LOG_CAPACITY> records{};
+        std::array<Record, FRAME_TIMING_LOG_CAPACITY> records{};
         std::atomic<std::uint64_t> head{0};
         std::atomic<std::uint64_t> tail{0};
         std::atomic<std::uint64_t> droppedRecords{0};
         std::binary_semaphore stopSignal{0};
         std::thread writerThread;
 
-        FrameTimingLog(std::ofstream file, std::chrono::milliseconds flushInterval);
+        FrameTimingLog(std::ofstream file, std::ofstream clockFile, std::chrono::milliseconds flushInterval);
+        void push(const Record& record) noexcept;
         void run();
         void drain();
 
@@ -65,6 +73,7 @@ namespace fm {
         FrameTimingLog& operator=(const FrameTimingLog&) = delete;
 
         void record(const FrameTiming& timing) noexcept;
+        void record(const ClockSample& sample) noexcept;
         Result<> close();
         std::uint64_t droppedRecordCount() const noexcept;
     };

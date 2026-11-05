@@ -248,9 +248,10 @@ namespace {
             return;
         }
         const std::string roundTrip =
-                report->roundTripTime
-                        ? std::format("{:.1f} ms",
-                                      std::chrono::duration<double, std::milli>(*report->roundTripTime).count())
+                report->clockSample
+                        ? std::format(
+                                  "{:.1f} ms",
+                                  std::chrono::duration<double, std::milli>(report->clockSample->roundTripTime).count())
                         : std::string("unknown");
         const bool sameSession = report->stats && previousStats &&
                                  previousStats->commonHeader.sessionId == report->stats->commonHeader.sessionId;
@@ -334,7 +335,8 @@ int main(int argumentCount, char** arguments) {
             return 1;
         }
         timingLog = std::move(*openedLog);
-        std::println("Writing frame timings to {}", *options->timingLogPath);
+        std::println("Writing frame timings to {} and clock offsets to {}", *options->timingLogPath,
+                     fm::clockLogPath(*options->timingLogPath).string());
     }
 
     auto virtualDisplay = fm::createVirtualDisplay();
@@ -370,6 +372,7 @@ int main(int argumentCount, char** arguments) {
     std::optional<Clock::time_point> lastRepeatTime;
     std::array<std::uint8_t, fm::MAX_CONTROL_PACKET_SIZE> controlBuffer{};
     std::optional<fm::Stats> reportedStats;
+    std::optional<Clock::time_point> lastClockSampleTime;
 
     const auto startTime = Clock::now();
     const auto deadline =
@@ -433,7 +436,13 @@ int main(int argumentCount, char** arguments) {
                              sendFailures);
             }
             if (sessions) {
-                printTabletReport(sessions->report(), reportedStats);
+                const auto report = sessions->report();
+                printTabletReport(report, reportedStats);
+                if (timingLog && report && report->clockSample &&
+                    report->clockSample->receivedTime != lastClockSampleTime) {
+                    lastClockSampleTime = report->clockSample->receivedTime;
+                    timingLog->record(*report->clockSample);
+                }
             }
             periodStart = now;
             periodFrames = 0;
@@ -592,7 +601,8 @@ int main(int argumentCount, char** arguments) {
             exitCode = 1;
         }
         if (const std::uint64_t dropped = timingLog->droppedRecordCount(); dropped > 0) {
-            std::println(stderr, "Warning: {} frame timings were dropped because the log could not keep up.", dropped);
+            std::println(stderr, "Warning: {} timing log rows were dropped because the log could not keep up.",
+                         dropped);
         }
     }
     return exitCode;
