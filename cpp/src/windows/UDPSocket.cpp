@@ -154,7 +154,7 @@ namespace fm {
     }
 
     SendStatus UDPSocket::sendTo(std::span<const std::uint8_t> data, const Endpoint& to) noexcept {
-        if (data.size() > INT_MAX) {
+        if (data.size() > INT_MAX || to.port == 0) {
             return SendStatus::SEND_FAILED;
         }
         const sockaddr_in address = toSockaddr(to);

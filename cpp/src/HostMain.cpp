@@ -328,12 +328,12 @@ int main(int argumentCount, char** arguments) {
 
     std::unique_ptr<fm::FrameTimingLog> timingLog;
     if (options->timingLogPath) {
-        auto opened = fm::FrameTimingLog::open(*options->timingLogPath);
-        if (!opened) {
-            std::println(stderr, "{}", opened.error().message);
+        auto openedLog = fm::FrameTimingLog::open(*options->timingLogPath);
+        if (!openedLog) {
+            std::println(stderr, "{}", openedLog.error().message);
             return 1;
         }
-        timingLog = std::move(*opened);
+        timingLog = std::move(*openedLog);
         std::println("Writing frame timings to {}", *options->timingLogPath);
     }
 
