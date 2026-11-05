@@ -36,8 +36,24 @@ if(WIN32)
 else()
     target_sources(fm_protocol PRIVATE cpp/src/posix/UDPSocket.cpp)
 endif()
-target_sources(fm_protocol PRIVATE cpp/src/Fragmenter.cpp cpp/src/FrameReceiver.cpp cpp/src/Reassembler.cpp cpp/src/VideoSender.cpp)
-target_include_directories(fm_protocol PUBLIC cpp/include)
+target_sources(fm_protocol PRIVATE
+        cpp/src/ControlPackets.cpp
+        cpp/src/EndpointParsing.cpp
+        cpp/src/Fragmenter.cpp
+        cpp/src/FrameReceiver.cpp
+        cpp/src/HeartbeatEcho.cpp
+        cpp/src/HostSessions.cpp
+        cpp/src/PeerTracker.cpp
+        cpp/src/Reassembler.cpp
+        cpp/src/ReliableDelivery.cpp
+        cpp/src/TabletSession.cpp
+        cpp/src/UDPControlTransport.cpp
+        cpp/src/VideoSender.cpp
+)
+target_include_directories(fm_protocol
+        PUBLIC cpp/include
+        PRIVATE cpp/src
+)
 target_link_libraries(fm_protocol PRIVATE fm_warnings)
 
 if(ANDROID)
@@ -128,6 +144,14 @@ if(FM_BUILD_TESTS)
             cpp/tests/DisplayLayoutTests.cpp
             cpp/tests/FallbackEncoderTests.cpp
             cpp/tests/H264BitstreamTests.cpp
+            cpp/tests/ControlPacketsTests.cpp
+            cpp/tests/ReliableDeliveryTests.cpp
+            cpp/tests/PeerTrackerTests.cpp
+            cpp/tests/HostSessionsTests.cpp
+            cpp/tests/TabletSessionTests.cpp
+            cpp/tests/ControlLoopbackTests.cpp
+            cpp/tests/UDPControlTransportTests.cpp
+            cpp/tests/EndpointParsingTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
@@ -140,6 +164,7 @@ if(FM_BUILD_TESTS)
                 cpp/tests/PipeWireFormatTests.cpp
                 cpp/tests/PortalScreenCastTests.cpp
                 cpp/tests/VAAPIDevicesTests.cpp
+                cpp/tests/UDPSocketTimestampTests.cpp
         )
         target_link_libraries(fm_tests PRIVATE PkgConfig::PIPEWIRE PkgConfig::TURBOJPEG PkgConfig::LIBAV)
     endif()

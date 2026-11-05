@@ -6,4 +6,14 @@
     <string name="receiver_failed">Cannot receive on port %1$d: %2$s</string>
     <string name="render_status">%1$.0f fps · %2$s · dropped %3$d · replaced %4$d · invalid %5$d · waiting for keyframe %6$d</string>
     <string name="no_codec">no video yet</string>
+    <string name="round_trip_status">" · RTT %1$.1f ms"</string>
+    <string name="session_connecting">FreeMonitor\nConnecting to %1$s…</string>
+    <string name="session_connected">FreeMonitor\nConnected to %1$s\nWaiting for the picture</string>
+    <string name="session_rejected">FreeMonitor\n%1$s rejected this tablet: %2$s\nTap to try again</string>
+    <string name="session_ended">FreeMonitor\n%1$s ended the session\nTap to reconnect</string>
+    <string name="session_failed">Cannot connect to %1$s: %2$s</string>
+    <string name="reject_unsupported_version">it speaks another protocol version</string>
+    <string name="reject_no_common_codec">no video codec in common</string>
+    <string name="reject_invalid_parameters">the tablet sent invalid screen settings</string>
+    <string name="reject_unknown">unknown reason</string>
 </resources>

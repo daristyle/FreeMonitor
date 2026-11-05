@@ -359,6 +359,23 @@ namespace fm {
         return CaptureStatus::CAPTURE_LOST;
     }
 
+    CaptureStatus PipeWireCaptureSource::repeatLastFrame(CapturedFrame& frame) noexcept {
+        if (!started) {
+            return CaptureStatus::CAPTURE_LOST;
+        }
+        std::span<const std::uint8_t> pixels;
+        switch (mailbox.acquireLast(frame, pixels)) {
+            case MailboxStatus::FRAME_READY:
+                frame.pixels = pixels.data();
+                return CaptureStatus::FRAME_READY;
+            case MailboxStatus::NO_NEW_FRAME:
+                return CaptureStatus::NO_NEW_FRAME;
+            case MailboxStatus::CLOSED:
+                return CaptureStatus::CAPTURE_LOST;
+        }
+        return CaptureStatus::CAPTURE_LOST;
+    }
+
     void PipeWireCaptureSource::releaseFrame() noexcept {
         mailbox.release();
     }

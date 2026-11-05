@@ -34,6 +34,7 @@ namespace fm {
         std::size_t latestIndex = 1;
         std::size_t readIndex = 2;
         bool hasLatest = false;
+        bool hasRead = false;
         bool reading = false;
         bool closed = false;
         std::uint64_t droppedFrames = 0;
@@ -49,6 +50,7 @@ namespace fm {
 
         MailboxStatus acquire(Description& description, std::span<const std::uint8_t>& bytes,
                               std::chrono::milliseconds timeout) noexcept;
+        MailboxStatus acquireLast(Description& description, std::span<const std::uint8_t>& bytes) noexcept;
         void release() noexcept;
 
         std::uint64_t droppedFrameCount() noexcept;

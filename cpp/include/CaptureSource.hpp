@@ -34,6 +34,7 @@ namespace fm {
         virtual Result<> start(const CaptureTarget& target) = 0;
         virtual void stop() = 0;
         virtual CaptureStatus acquireFrame(CapturedFrame& frame, std::chrono::milliseconds timeout) noexcept = 0;
+        virtual CaptureStatus repeatLastFrame(CapturedFrame& frame) noexcept = 0;
         virtual void releaseFrame() noexcept = 0;
     };
 

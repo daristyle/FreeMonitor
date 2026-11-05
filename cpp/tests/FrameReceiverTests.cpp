@@ -1,5 +1,9 @@
+#include "ControlTestHelpers.hpp"
+#include "Fragmenter.hpp"
 #include "FrameReceiver.hpp"
+#include "HostSessions.hpp"
 #include "Timestamp.hpp"
+#include "UDPControlTransport.hpp"
 #include "VideoSender.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -77,6 +82,105 @@ namespace {
         const auto endpoint = receiver.localEndpoint();
         REQUIRE(endpoint);
         return *endpoint;
+    }
+
+    constexpr fm::HostOffer OFFER{.width = 2944, .height = 1840, .fps = 60, .codecs = BOTH_CODECS, .features = 0};
+    constexpr std::uint32_t FIRST_FRAME_ID = 1000;
+
+    std::unique_ptr<fm::FrameReceiver> openSessionReceiver(const fm::TabletSettings& settings) {
+        auto receiver = fm::FrameReceiver::openSession(settings);
+        REQUIRE(receiver);
+        return std::move(*receiver);
+    }
+
+    struct TestHost {
+        fm::UDPSocket udpSocket = openSenderSocket();
+        fm::UDPControlTransport transport{udpSocket};
+        RecordingListener listener;
+        fm::HostSessions sessions;
+        fm::VideoSender videoSender;
+        std::uint32_t byesReceived = 0;
+        std::uint32_t keyframeRequestsReceived = 0;
+
+        explicit TestHost(fm::HostOffer offer = OFFER, std::uint32_t firstFrameId = FIRST_FRAME_ID)
+            : sessions(transport, listener, offer, counterFrom(9000)), videoSender(udpSocket, firstFrameId) {}
+
+        fm::TabletSettings settings(std::uint8_t codecs = BOTH_CODECS) const {
+            const auto endpoint = udpSocket.localEndpoint();
+            REQUIRE(endpoint);
+            return fm::TabletSettings{
+                    .host = *endpoint, .width = 2944, .height = 1840, .refreshHz = 60, .codecs = codecs, .features = 0};
+        }
+
+        void pump(std::chrono::milliseconds timeout) {
+            std::array<std::uint8_t, fm::MAX_CONTROL_PACKET_SIZE> buffer{};
+            fm::Endpoint from;
+            auto received = udpSocket.receiveFrom(buffer, from, timeout);
+            while (received.status == fm::ReceiveStatus::RECEIVED) {
+                const auto type = static_cast<fm::PacketType>(buffer[3]);
+                byesReceived += type == fm::PacketType::BYE ? 1 : 0;
+                keyframeRequestsReceived += type == fm::PacketType::KEYFRAME_REQUEST ? 1 : 0;
+                sessions.handlePacket(std::span(buffer).first(received.size), from, received.arrivalTime);
+                received = udpSocket.receiveFrom(buffer, from, 0ms);
+            }
+            sessions.poll(std::chrono::steady_clock::now());
+        }
+
+        bool pumpUntil(const std::function<bool()>& condition) {
+            const auto deadline = std::chrono::steady_clock::now() + WAIT_TIMEOUT;
+            while (!condition()) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    return false;
+                }
+                pump(1ms);
+            }
+            return true;
+        }
+
+        void pumpFor(std::chrono::milliseconds duration) {
+            const auto end = std::chrono::steady_clock::now() + duration;
+            while (std::chrono::steady_clock::now() < end) {
+                pump(1ms);
+            }
+        }
+
+        void connect(fm::FrameReceiver& receiver) {
+            REQUIRE(pumpUntil([&] {
+                return sessions.streamingSession() != nullptr &&
+                       receiver.sessionStatus().state == fm::TabletState::CONNECTED;
+            }));
+            REQUIRE(sessions.takeKeyframeRequest());
+        }
+
+        void sendFrame(const std::vector<std::uint8_t>& data, bool keyframe, fm::Codec codec) {
+            fm::Session* session = sessions.streamingSession();
+            REQUIRE(session != nullptr);
+            REQUIRE(videoSender.send(makeEncodedFrame(data, keyframe), codec, *session).status ==
+                    fm::FrameSendStatus::FRAME_SENT);
+            if (keyframe) {
+                sessions.keyframeSent(std::chrono::steady_clock::now());
+            }
+        }
+
+        void sendFrameWithoutLastFragment(std::uint32_t frameId, const std::vector<std::uint8_t>& data) {
+            fm::Session* session = sessions.streamingSession();
+            REQUIRE(session != nullptr);
+            fm::Fragmenter fragmenter;
+            REQUIRE(fragmenter.begin(data, frameId, fm::Codec::H264, false, 1));
+            REQUIRE(fragmenter.fragmentCount() > 1);
+            std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
+            for (std::uint16_t index = 0; index + 1 < fragmenter.fragmentCount(); ++index) {
+                const std::size_t size = fragmenter.write(index, session->sessionId, session->nextSeq++, 1, packet);
+                REQUIRE(udpSocket.sendTo(std::span(packet).first(size), session->peer) == fm::SendStatus::SENT);
+            }
+        }
+    };
+
+    void receiveFrame(fm::FrameReceiver& receiver, TestHost& host, const std::vector<std::uint8_t>& data) {
+        fm::ReassembledFrame frame;
+        REQUIRE(host.pumpUntil([&] { return receiver.acquire(frame, 0ms) == fm::MailboxStatus::FRAME_READY; }));
+        CHECK(std::ranges::equal(frame.data, data));
+        receiver.release();
     }
 }
 
@@ -221,4 +325,144 @@ TEST_CASE("a receiver cannot open a port that is already taken") {
     const auto second = fm::FrameReceiver::open(endpointOf(*receiver), DEVELOPMENT_SESSION_ID);
     REQUIRE_FALSE(second);
     CHECK_FALSE(second.error().message.empty());
+}
+
+TEST_CASE("a session receiver connects to the host and hands out the host's video") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+
+    const auto status = receiver->sessionStatus();
+    CHECK(status.sessionId == host.sessions.streamingSession()->sessionId);
+    CHECK(status.sessionId != 0);
+    CHECK(status.stream.codec == fm::Codec::H264);
+    CHECK(status.stream.width == OFFER.width);
+    CHECK(status.stream.height == OFFER.height);
+    CHECK(status.stream.fps == OFFER.fps);
+    CHECK(status.sessionCount == 1);
+
+    const auto data = makeFrameData(3 * fm::MAX_FRAGMENT_PAYLOAD + 5, 9);
+    host.sendFrame(data, true, fm::Codec::H264);
+    fm::ReassembledFrame frame;
+    REQUIRE(host.pumpUntil([&] { return receiver->acquire(frame, 0ms) == fm::MailboxStatus::FRAME_READY; }));
+    CHECK(std::ranges::equal(frame.data, data));
+    CHECK(frame.frameId == FIRST_FRAME_ID);
+    CHECK(frame.keyframe);
+    CHECK(frame.codec == fm::Codec::H264);
+    receiver->release();
+
+    receiver->reconnect();
+    host.pumpFor(50ms);
+    CHECK(receiver->sessionStatus().sessionCount == 1);
+    CHECK(receiver->sessionStatus().state == fm::TabletState::CONNECTED);
+}
+
+TEST_CASE("a keyframe request from another thread reaches the host") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+    const auto keyframe = makeFrameData(2 * fm::MAX_FRAGMENT_PAYLOAD, 1);
+    host.sendFrame(keyframe, true, fm::Codec::H264);
+    receiveFrame(*receiver, host, keyframe);
+    host.pumpFor(150ms);
+    REQUIRE(host.keyframeRequestsReceived == 0);
+
+    std::thread([&] { receiver->requestKeyframe(); }).join();
+    REQUIRE(host.pumpUntil([&] { return host.sessions.takeKeyframeRequest(); }));
+    CHECK(host.keyframeRequestsReceived >= 1);
+}
+
+TEST_CASE("an incomplete H.264 frame makes the session receiver ask for a keyframe by itself") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+    const auto keyframe = makeFrameData(2 * fm::MAX_FRAGMENT_PAYLOAD, 1);
+    host.sendFrame(keyframe, true, fm::Codec::H264);
+    receiveFrame(*receiver, host, keyframe);
+    REQUIRE(host.keyframeRequestsReceived == 0);
+
+    host.sendFrameWithoutLastFragment(FIRST_FRAME_ID + 5, makeFrameData(3 * fm::MAX_FRAGMENT_PAYLOAD, 2));
+    REQUIRE(host.pumpUntil([&] { return host.sessions.takeKeyframeRequest(); }));
+    CHECK(receiver->statistics().framesDropped == 1);
+}
+
+TEST_CASE("stop sends three BYEs, and the host ends the session") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+    const std::uint32_t sessionId = receiver->sessionStatus().sessionId;
+
+    const auto started = std::chrono::steady_clock::now();
+    receiver->stop();
+    CHECK(std::chrono::steady_clock::now() - started < 1s);
+    REQUIRE(host.pumpUntil([&] { return host.byesReceived == 3; }));
+    CHECK(host.listener.ended == std::vector{std::pair{sessionId, fm::SessionEndReason::BYE}});
+    CHECK(host.sessions.streamingSession() == nullptr);
+    CHECK(receiver->sessionStatus().state == fm::TabletState::IDLE);
+}
+
+TEST_CASE("a rejected session receiver keeps the reason and connects again only on reconnect") {
+    TestHost host(fm::HostOffer{.width = 2944, .height = 1840, .fps = 60, .codecs = fm::CodecFlags::H264});
+    auto receiver = openSessionReceiver(host.settings(fm::CodecFlags::JPEG));
+    receiver->start();
+    REQUIRE(host.pumpUntil([&] { return receiver->sessionStatus().state == fm::TabletState::REJECTED; }));
+    CHECK(receiver->sessionStatus().rejectReason == static_cast<std::uint8_t>(fm::RejectReason::NO_COMMON_CODEC));
+    host.pumpFor(600ms);
+    CHECK(host.listener.rejected.size() == 1);
+
+    host.sessions.setOffer(OFFER);
+    receiver->reconnect();
+    host.connect(*receiver);
+    const auto status = receiver->sessionStatus();
+    CHECK(status.sessionCount == 2);
+    CHECK(status.stream.codec == fm::Codec::JPEG);
+}
+
+TEST_CASE("after the host ends the session, a reconnect starts a new one that accepts lower frame IDs at once") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+    const auto first = makeFrameData(2 * fm::MAX_FRAGMENT_PAYLOAD, 1);
+    host.sendFrame(first, true, fm::Codec::H264);
+    receiveFrame(*receiver, host, first);
+    const std::uint32_t firstSessionId = receiver->sessionStatus().sessionId;
+
+    host.sessions.close(std::chrono::steady_clock::now());
+    REQUIRE(host.pumpUntil([&] { return receiver->sessionStatus().state == fm::TabletState::ENDED_BY_HOST; }));
+    host.pumpFor(600ms);
+    CHECK(receiver->sessionStatus().state == fm::TabletState::ENDED_BY_HOST);
+
+    receiver->reconnect();
+    host.connect(*receiver);
+    CHECK(receiver->sessionStatus().sessionId != firstSessionId);
+    CHECK(receiver->sessionStatus().sessionCount == 2);
+    fm::VideoSender restartedSender(host.udpSocket, 10);
+    const auto second = makeFrameData(2 * fm::MAX_FRAGMENT_PAYLOAD, 2);
+    REQUIRE(restartedSender.send(makeEncodedFrame(second, true), fm::Codec::H264, *host.sessions.streamingSession())
+                    .status == fm::FrameSendStatus::FRAME_SENT);
+    receiveFrame(*receiver, host, second);
+    CHECK(receiver->statistics().senderRestarts == 0);
+}
+
+TEST_CASE("a session receiver ignores video of another session") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+    fm::Session otherSession = *host.sessions.streamingSession();
+    otherSession.sessionId += 1;
+    REQUIRE(host.videoSender
+                    .send(makeEncodedFrame(makeFrameData(2 * fm::MAX_FRAGMENT_PAYLOAD, 7), true), fm::Codec::H264,
+                          otherSession)
+                    .status == fm::FrameSendStatus::FRAME_SENT);
+    const auto data = makeFrameData(2 * fm::MAX_FRAGMENT_PAYLOAD, 8);
+    host.sendFrame(data, true, fm::Codec::H264);
+    receiveFrame(*receiver, host, data);
+    CHECK(receiver->statistics().ignoredPackets >= 2);
+    CHECK(receiver->statistics().framesCompleted == 1);
 }

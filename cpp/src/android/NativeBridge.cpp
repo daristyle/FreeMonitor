@@ -1,5 +1,7 @@
+#include "EndpointParsing.hpp"
 #include "FrameReceiver.hpp"
 #include "Packets.hpp"
+#include "TabletSession.hpp"
 #include "Timestamp.hpp"
 #include "UDPSocket.hpp"
 
@@ -17,8 +19,11 @@ namespace fm {
         constexpr const char* ILLEGAL_STATE_EXCEPTION = "java/lang/IllegalStateException";
         constexpr std::uint32_t DEVELOPMENT_SESSION_ID = 0;
         constexpr jint MAX_PORT = 65535;
+        constexpr jint MAX_SCREEN_VALUE = 65535;
         constexpr jsize STATISTICS_COUNT = 7;
         constexpr jsize FRAME_INFO_COUNT = 7;
+        constexpr jsize SESSION_STATUS_COUNT = 9;
+        constexpr jlong UNKNOWN_ROUND_TRIP = -1;
 
         FrameReceiver* toReceiver(jlong handle) {
             return reinterpret_cast<FrameReceiver*>(static_cast<std::intptr_t>(handle));
@@ -51,6 +56,40 @@ namespace fm {
             }
             auto receiver = FrameReceiver::open(Endpoint{ANY_IP_ADDRESS, static_cast<std::uint16_t>(port)},
                                                 DEVELOPMENT_SESSION_ID);
+            if (!receiver) {
+                throwIllegalState(environment, receiver.error().message);
+                return 0;
+            }
+            (*receiver)->start();
+            return toHandle(receiver->release());
+        }
+
+        bool isScreenValue(jint value) {
+            return value > 0 && value <= MAX_SCREEN_VALUE;
+        }
+
+        jlong createSessionReceiver(JNIEnv* environment, jclass, jstring host, jint width, jint height,
+                                    jint refreshHz) {
+            if (!isScreenValue(width) || !isScreenValue(height) || !isScreenValue(refreshHz)) {
+                throwIllegalState(environment, "The screen size and refresh rate must be 1 to 65535");
+                return 0;
+            }
+            const char* hostCharacters = environment->GetStringUTFChars(host, nullptr);
+            if (hostCharacters == nullptr) {
+                return 0;
+            }
+            const std::string hostText(hostCharacters);
+            environment->ReleaseStringUTFChars(host, hostCharacters);
+            const auto endpoint = parseEndpoint(hostText);
+            if (!endpoint) {
+                throwIllegalState(environment, "The host must be IPv4:port, for example 192.168.1.10:50500");
+                return 0;
+            }
+            const TabletSettings settings{.host = *endpoint,
+                                          .width = static_cast<std::uint16_t>(width),
+                                          .height = static_cast<std::uint16_t>(height),
+                                          .refreshHz = static_cast<std::uint16_t>(refreshHz)};
+            auto receiver = FrameReceiver::openSession(settings);
             if (!receiver) {
                 throwIllegalState(environment, receiver.error().message);
                 return 0;
@@ -109,16 +148,48 @@ namespace fm {
             return array;
         }
 
+        void requestKeyframe(JNIEnv*, jclass, jlong handle) {
+            toReceiver(handle)->requestKeyframe();
+        }
+
+        void reconnect(JNIEnv*, jclass, jlong handle) {
+            toReceiver(handle)->reconnect();
+        }
+
+        jlongArray sessionStatus(JNIEnv* environment, jclass, jlong handle) {
+            const FrameReceiverSessionStatus status = toReceiver(handle)->sessionStatus();
+            const std::array<jlong, SESSION_STATUS_COUNT> values{
+                    static_cast<jlong>(status.state),
+                    static_cast<jlong>(status.rejectReason),
+                    static_cast<jlong>(status.sessionId),
+                    status.roundTripTime ? static_cast<jlong>(status.roundTripTime->count()) : UNKNOWN_ROUND_TRIP,
+                    static_cast<jlong>(status.stream.codec),
+                    static_cast<jlong>(status.stream.width),
+                    static_cast<jlong>(status.stream.height),
+                    static_cast<jlong>(status.stream.fps),
+                    static_cast<jlong>(status.sessionCount),
+            };
+            jlongArray array = environment->NewLongArray(SESSION_STATUS_COUNT);
+            if (array != nullptr) {
+                environment->SetLongArrayRegion(array, 0, SESSION_STATUS_COUNT, values.data());
+            }
+            return array;
+        }
+
         void destroyReceiver(JNIEnv*, jclass, jlong handle) {
             delete toReceiver(handle);
         }
 
-        const std::array<JNINativeMethod, 6> NATIVE_METHODS{{
+        const std::array<JNINativeMethod, 10> NATIVE_METHODS{{
                 {"protocolVersion", "()I", reinterpret_cast<void*>(&protocolVersion)},
                 {"maxFrameSize", "()I", reinterpret_cast<void*>(&maxFrameSize)},
                 {"createReceiver", "(I)J", reinterpret_cast<void*>(&createReceiver)},
+                {"createSessionReceiver", "(Ljava/lang/String;III)J", reinterpret_cast<void*>(&createSessionReceiver)},
                 {"nextFrame", "(J[B[JI)I", reinterpret_cast<void*>(&nextFrame)},
                 {"receiverStatistics", "(J)[J", reinterpret_cast<void*>(&receiverStatistics)},
+                {"requestKeyframe", "(J)V", reinterpret_cast<void*>(&requestKeyframe)},
+                {"reconnect", "(J)V", reinterpret_cast<void*>(&reconnect)},
+                {"sessionStatus", "(J)[J", reinterpret_cast<void*>(&sessionStatus)},
                 {"destroyReceiver", "(J)V", reinterpret_cast<void*>(&destroyReceiver)},
         }};
     }

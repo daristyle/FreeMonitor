@@ -3,6 +3,7 @@
 #include "CaptureSource.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <vector>
 
@@ -14,6 +15,7 @@ namespace fm {
         std::uint32_t stride;
         std::vector<std::uint8_t> pixels;
         std::uint64_t frameIndex = 0;
+        std::chrono::steady_clock::time_point lastCaptureTime{};
         bool started = false;
         bool frameHeld = false;
 
@@ -28,6 +30,7 @@ namespace fm {
         Result<> start(const CaptureTarget& target) override;
         void stop() override;
         CaptureStatus acquireFrame(CapturedFrame& frame, std::chrono::milliseconds timeout) noexcept override;
+        CaptureStatus repeatLastFrame(CapturedFrame& frame) noexcept override;
         void releaseFrame() noexcept override;
 
         static constexpr std::array<std::uint8_t, 4> patternPixel(std::uint32_t x, std::uint32_t y,

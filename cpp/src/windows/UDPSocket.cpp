@@ -66,17 +66,18 @@ namespace fm {
             const int bufferSize = buffer.size() > INT_MAX ? INT_MAX : static_cast<int>(buffer.size());
             const int received = ::recvfrom(handle, reinterpret_cast<char*>(buffer.data()), bufferSize, 0,
                                             reinterpret_cast<sockaddr*>(&address), &addressSize);
+            const auto readTime = std::chrono::steady_clock::now();
             if (received == SOCKET_ERROR) {
                 const int code = ::WSAGetLastError();
                 if (code == WSAEMSGSIZE) {
                     from = toEndpoint(address);
-                    return {ReceiveStatus::TRUNCATED, static_cast<std::size_t>(bufferSize)};
+                    return {ReceiveStatus::TRUNCATED, static_cast<std::size_t>(bufferSize), readTime};
                 }
                 return {isTransient(code) ? ReceiveStatus::NO_DATAGRAM : ReceiveStatus::RECEIVE_FAILED, 0};
             }
 
             from = toEndpoint(address);
-            return {ReceiveStatus::RECEIVED, static_cast<std::size_t>(received)};
+            return {ReceiveStatus::RECEIVED, static_cast<std::size_t>(received), readTime};
         }
 
         Result<int> setBufferSize(SOCKET handle, int option, int bytes, const char* operation) {

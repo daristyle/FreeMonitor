@@ -34,6 +34,7 @@ namespace fm {
         EncodeStatus encode(const CapturedFrame& input, EncodedFrame& output) noexcept override;
         void requestKeyframe() noexcept override;
         std::string_view description() const noexcept override;
+        std::optional<Codec> codec() const noexcept override;
     };
 
 }

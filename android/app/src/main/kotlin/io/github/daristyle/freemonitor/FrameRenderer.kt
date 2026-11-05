@@ -68,6 +68,7 @@ class FrameRenderer(
                         codec = codec,
                         framesWaitingForKeyframe = framesWaitingForKeyframe,
                         statistics = receiver.statistics(),
+                        session = receiver.sessionStatus(),
                     ),
                 )
                 jpegFramesShown = 0
@@ -110,6 +111,7 @@ class FrameRenderer(
     ) {
         if (!keyframeGate.accept(frameInfo.frameId, frameInfo.keyframe)) {
             ++framesWaitingForKeyframe
+            receiver.requestKeyframe()
             timingLog?.record(frameInfo, FrameTimingLog.Outcome.WAITING_FOR_KEYFRAME, acquireUs, 0, 0, 0)
             return
         }
@@ -120,6 +122,7 @@ class FrameRenderer(
                 }
         if (!decoder.decode(frameBuffer, length, frameInfo, acquireUs)) {
             keyframeGate.reset()
+            receiver.requestKeyframe()
             timingLog?.record(frameInfo, FrameTimingLog.Outcome.DECODE_FAILED, acquireUs, 0, 0, 0)
         }
     }

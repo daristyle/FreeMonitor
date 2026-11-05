@@ -20,6 +20,7 @@ namespace fm {
         latestIndex = 1;
         readIndex = 2;
         hasLatest = false;
+        hasRead = false;
         reading = false;
         closed = false;
         droppedFrames = 0;
@@ -64,13 +65,32 @@ namespace fm {
     MailboxStatus FrameMailbox<Description>::acquire(Description& description, std::span<const std::uint8_t>& bytes,
                                                      std::chrono::milliseconds timeout) noexcept {
         std::unique_lock lock(mutex);
-        assert(!reading && "release() must be called before the next acquire()");
+        assert(!reading && "release() must be called before the next acquire() or acquireLast()");
         frameReady.wait_for(lock, timeout, [this] { return hasLatest || closed; });
         if (!hasLatest) {
             return closed ? MailboxStatus::CLOSED : MailboxStatus::NO_NEW_FRAME;
         }
         std::swap(readIndex, latestIndex);
         hasLatest = false;
+        hasRead = true;
+        reading = true;
+        const Slot& slot = slots[readIndex];
+        description = slot.description;
+        bytes = std::span<const std::uint8_t>(slot.bytes).first(slot.size);
+        return MailboxStatus::FRAME_READY;
+    }
+
+    template<typename Description>
+    MailboxStatus FrameMailbox<Description>::acquireLast(Description& description,
+                                                         std::span<const std::uint8_t>& bytes) noexcept {
+        const std::lock_guard lock(mutex);
+        assert(!reading && "release() must be called before the next acquire() or acquireLast()");
+        if (closed) {
+            return MailboxStatus::CLOSED;
+        }
+        if (!hasRead) {
+            return MailboxStatus::NO_NEW_FRAME;
+        }
         reading = true;
         const Slot& slot = slots[readIndex];
         description = slot.description;

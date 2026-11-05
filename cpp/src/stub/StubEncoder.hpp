@@ -8,7 +8,7 @@
 namespace fm {
     class StubEncoder final : public Encoder {
     private:
-        Codec codec;
+        Codec outputCodec;
         EncoderConfig config;
         std::vector<std::uint8_t> outputBuffer;
         bool keyframeRequested = true;
@@ -21,6 +21,7 @@ namespace fm {
         EncodeStatus encode(const CapturedFrame& input, EncodedFrame& output) noexcept override;
         void requestKeyframe() noexcept override;
         std::string_view description() const noexcept override;
+        std::optional<Codec> codec() const noexcept override;
     };
 
 }

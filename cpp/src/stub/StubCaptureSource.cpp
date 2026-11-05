@@ -36,7 +36,7 @@ namespace fm {
         if (!started) {
             return CaptureStatus::CAPTURE_LOST;
         }
-        assert(!frameHeld && "releaseFrame() must be called before the next acquireFrame()");
+        assert(!frameHeld && "releaseFrame() must be called before the next acquireFrame() or repeatLastFrame()");
 
         constexpr std::size_t pixelSize = bytesPerPixel(PIXEL_FORMAT);
         for (std::uint32_t y = 0; y < height; ++y) {
@@ -57,8 +57,27 @@ namespace fm {
         frame.stride = stride;
         frame.format = PIXEL_FORMAT;
         frame.captureTime = std::chrono::steady_clock::now();
+        lastCaptureTime = frame.captureTime;
 
         ++frameIndex;
+        frameHeld = true;
+        return CaptureStatus::FRAME_READY;
+    }
+
+    CaptureStatus StubCaptureSource::repeatLastFrame(CapturedFrame& frame) noexcept {
+        if (!started) {
+            return CaptureStatus::CAPTURE_LOST;
+        }
+        assert(!frameHeld && "releaseFrame() must be called before the next acquireFrame() or repeatLastFrame()");
+        if (frameIndex == 0) {
+            return CaptureStatus::NO_NEW_FRAME;
+        }
+        frame.pixels = pixels.data();
+        frame.width = width;
+        frame.height = height;
+        frame.stride = stride;
+        frame.format = PIXEL_FORMAT;
+        frame.captureTime = lastCaptureTime;
         frameHeld = true;
         return CaptureStatus::FRAME_READY;
     }

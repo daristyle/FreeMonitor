@@ -110,3 +110,30 @@ TEST_CASE("stop is safe when not started") {
     captureSource.stop();
     captureSource.stop();
 }
+
+TEST_CASE("repeatLastFrame hands out the last frame again with its pixels and capture time") {
+    constexpr std::uint32_t width = 16;
+    constexpr std::uint32_t height = 8;
+    fm::StubCaptureSource captureSource(width, height);
+    fm::CapturedFrame frame;
+    CHECK(captureSource.repeatLastFrame(frame) == fm::CaptureStatus::CAPTURE_LOST);
+    REQUIRE(captureSource.start(TEST_TARGET));
+    CHECK(captureSource.repeatLastFrame(frame) == fm::CaptureStatus::NO_NEW_FRAME);
+
+    fm::CapturedFrame first;
+    REQUIRE(captureSource.acquireFrame(first, 0ms) == fm::CaptureStatus::FRAME_READY);
+    captureSource.releaseFrame();
+    REQUIRE(captureSource.repeatLastFrame(frame) == fm::CaptureStatus::FRAME_READY);
+    CHECK(frame.pixels == first.pixels);
+    CHECK(frame.width == width);
+    CHECK(frame.height == height);
+    CHECK(frame.stride == first.stride);
+    CHECK(frame.format == first.format);
+    CHECK(frame.captureTime == first.captureTime);
+    checkPixel(frame, 3, 2, 0);
+    captureSource.releaseFrame();
+
+    REQUIRE(captureSource.acquireFrame(frame, 0ms) == fm::CaptureStatus::FRAME_READY);
+    checkPixel(frame, 3, 2, 1);
+    captureSource.releaseFrame();
+}

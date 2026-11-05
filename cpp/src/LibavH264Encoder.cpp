@@ -246,4 +246,8 @@ namespace fm {
         return encoderDescription;
     }
 
+    std::optional<Codec> LibavH264Encoder::codec() const noexcept {
+        return Codec::H264;
+    }
+
 }

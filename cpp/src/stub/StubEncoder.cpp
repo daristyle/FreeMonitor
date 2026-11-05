@@ -5,7 +5,7 @@
 #include <utility>
 
 namespace fm {
-    StubEncoder::StubEncoder(Codec codec) : codec(codec) {}
+    StubEncoder::StubEncoder(Codec codec) : outputCodec(codec) {}
 
     Result<> StubEncoder::configure(const EncoderConfig& config) {
         if (config.width == 0 || config.height == 0) {
@@ -14,7 +14,7 @@ namespace fm {
         if (config.framesPerSecond == 0) {
             return std::unexpected(Error{ErrorCode::INVALID_ARGUMENT, "Encoder frame rate must not be zero"});
         }
-        if (codec == Codec::JPEG && (config.jpegQuality < 1 || config.jpegQuality > 100)) {
+        if (outputCodec == Codec::JPEG && (config.jpegQuality < 1 || config.jpegQuality > 100)) {
             return std::unexpected(Error{ErrorCode::INVALID_ARGUMENT, "JPEG quality must be 1 to 100"});
         }
 
@@ -39,8 +39,8 @@ namespace fm {
 
         const bool requested = std::exchange(keyframeRequested, false);
         output.data = outputBuffer;
-        output.codec = codec;
-        output.keyframe = codec == Codec::JPEG || requested;
+        output.codec = outputCodec;
+        output.keyframe = outputCodec == Codec::JPEG || requested;
         output.captureTime = input.captureTime;
         return EncodeStatus::FRAME_ENCODED;
     }
@@ -50,7 +50,11 @@ namespace fm {
     }
 
     std::string_view StubEncoder::description() const noexcept {
-        return codec == Codec::JPEG ? "stub JPEG" : "stub H.264";
+        return outputCodec == Codec::JPEG ? "stub JPEG" : "stub H.264";
+    }
+
+    std::optional<Codec> StubEncoder::codec() const noexcept {
+        return outputCodec;
     }
 
 }

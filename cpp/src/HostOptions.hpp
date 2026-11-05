@@ -30,6 +30,5 @@ namespace fm {
         std::optional<std::string> timingLogPath;
     };
 
-    std::optional<Endpoint> parseEndpoint(std::string_view text);
     Result<HostOptions> parseHostOptions(std::span<const std::string_view> arguments, bool developmentModeAllowed);
 }

@@ -286,6 +286,11 @@ TEST_CASE("createEncoder returns NVENC for nvenc, VA-API for vaapi and a fallbac
     CHECK(dynamic_cast<fm::FallbackEncoder*>(fm::createEncoder(fm::EncoderChoice::AUTO).get()) != nullptr);
 }
 
+TEST_CASE("the hardware encoders report H.264 as their codec, even without the hardware") {
+    CHECK(fm::createEncoder(fm::EncoderChoice::NVENC)->codec() == fm::Codec::H264);
+    CHECK(fm::createEncoder(fm::EncoderChoice::VAAPI)->codec() == fm::Codec::H264);
+}
+
 TEST_CASE("hardware encoders reject bad settings in configure") {
     const auto kind = GENERATE(HardwareEncoder::NVENC, HardwareEncoder::VAAPI);
     CAPTURE(nameOf(kind));

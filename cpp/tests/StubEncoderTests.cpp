@@ -61,6 +61,7 @@ TEST_CASE("the stub encoder names its codec and marks its frames with it") {
     fm::EncodedFrame output;
     REQUIRE(encoder.encode(frame, output) == fm::EncodeStatus::FRAME_ENCODED);
     CHECK(output.codec == codec);
+    CHECK(encoder.codec() == codec);
     CHECK(encoder.description() == (codec == fm::Codec::JPEG ? "stub JPEG" : "stub H.264"));
 }
 

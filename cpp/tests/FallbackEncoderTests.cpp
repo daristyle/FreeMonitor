@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,7 +19,7 @@ namespace {
     class FakeEncoder final : public fm::Encoder {
     private:
         std::string name;
-        fm::Codec codec;
+        fm::Codec outputCodec;
         std::uint32_t maxWidth;
         std::array<std::uint8_t, 1> outputBytes{};
 
@@ -26,7 +27,7 @@ namespace {
         int keyframeRequests = 0;
 
         FakeEncoder(std::string name, fm::Codec codec, std::uint32_t maxWidth)
-            : name(std::move(name)), codec(codec), maxWidth(maxWidth) {}
+            : name(std::move(name)), outputCodec(codec), maxWidth(maxWidth) {}
 
         fm::Result<> configure(const fm::EncoderConfig& config) override {
             if (config.width > maxWidth) {
@@ -37,7 +38,7 @@ namespace {
 
         fm::EncodeStatus encode(const fm::CapturedFrame&, fm::EncodedFrame& output) noexcept override {
             output.data = outputBytes;
-            output.codec = codec;
+            output.codec = outputCodec;
             return fm::EncodeStatus::FRAME_ENCODED;
         }
 
@@ -47,6 +48,10 @@ namespace {
 
         std::string_view description() const noexcept override {
             return name;
+        }
+
+        std::optional<fm::Codec> codec() const noexcept override {
+            return outputCodec;
         }
     };
 
@@ -132,6 +137,17 @@ TEST_CASE("a new configure can switch the fallback encoder to another encoder") 
     CHECK(encodedCodec(*chain.encoder) == fm::Codec::JPEG);
     REQUIRE(chain.encoder->configure(configWithWidth(SMALL_WIDTH)));
     CHECK(encodedCodec(*chain.encoder) == fm::Codec::H264);
+}
+
+TEST_CASE("the fallback encoder reports the codec of its active encoder, and none while no encoder is active") {
+    auto chain = makeChain(SMALL_WIDTH, LARGE_WIDTH);
+    CHECK_FALSE(chain.encoder->codec());
+    REQUIRE(chain.encoder->configure(configWithWidth(SMALL_WIDTH)));
+    CHECK(chain.encoder->codec() == fm::Codec::H264);
+    REQUIRE(chain.encoder->configure(configWithWidth(LARGE_WIDTH)));
+    CHECK(chain.encoder->codec() == fm::Codec::JPEG);
+    REQUIRE_FALSE(chain.encoder->configure(configWithWidth(LARGE_WIDTH + 1)));
+    CHECK_FALSE(chain.encoder->codec());
 }
 
 TEST_CASE("a keyframe request reaches only the active encoder of the fallback chain") {

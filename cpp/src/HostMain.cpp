@@ -2,36 +2,49 @@
 #include "Encoder.hpp"
 #include "FrameTimingLog.hpp"
 #include "HostOptions.hpp"
+#include "HostSessions.hpp"
 #include "Session.hpp"
 #include "Timestamp.hpp"
+#include "UDPControlTransport.hpp"
 #include "UDPSocket.hpp"
 #include "VideoSender.hpp"
 #include "VirtualDisplay.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <format>
 #include <memory>
 #include <optional>
 #include <print>
 #include <random>
+#include <span>
+#include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace {
     using Clock = std::chrono::steady_clock;
 
-    constexpr std::chrono::milliseconds CAPTURE_TIMEOUT{100};
+    constexpr std::chrono::milliseconds CAPTURE_TIMEOUT{10};
     constexpr std::chrono::seconds REPORT_INTERVAL{1};
     constexpr std::chrono::milliseconds KEYFRAME_INTERVAL{fm::DEVELOPMENT_KEYFRAME_INTERVAL_MS};
+    constexpr std::size_t MAX_CONTROL_PACKETS_PER_PASS = 32;
+    constexpr std::chrono::milliseconds BYE_WAIT_LIMIT{200};
+    constexpr std::chrono::milliseconds BYE_WAIT_STEP{5};
+    constexpr std::chrono::milliseconds IDLE_REFRESH_DELAY{150};
+    constexpr std::chrono::milliseconds IDLE_REFRESH_MIN_INTERVAL{1000};
     constexpr int SEND_BUFFER_SIZE = 4 * 1024 * 1024;
     constexpr double BITS_PER_MEGABIT = 1'000'000.0;
     constexpr double BYTES_PER_KILOBYTE = 1024.0;
+    constexpr double PERCENT = 100.0;
 
     std::atomic<bool> stopRequested = false;
 
@@ -97,12 +110,14 @@ namespace {
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
             std::println(stderr, "                       [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams video in development mode.");
+            std::println(stderr, "  Without --destination, the host waits for a tablet on UDP port {}.", fm::HOST_PORT);
         } else {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
             std::println(stderr, "                       [--position right|left|above|below|X,Y]");
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
             std::println(stderr, "                       [--timing-log FILE]");
-            std::println(stderr, "  --seconds 0 runs until Ctrl+C.");
+            std::println(stderr, "  --seconds 0 runs until Ctrl+C. The host waits for a tablet on UDP port {}.",
+                         fm::HOST_PORT);
         }
         std::println(stderr, "  --encoder auto tries NVENC, then VA-API, then JPEG. It is the default.");
         std::println(stderr,
@@ -113,6 +128,160 @@ namespace {
     void printEndpoint(const fm::Endpoint& endpoint) {
         std::println("{}.{}.{}.{}:{}", (endpoint.address >> 24) & 0xFF, (endpoint.address >> 16) & 0xFF,
                      (endpoint.address >> 8) & 0xFF, endpoint.address & 0xFF, endpoint.port);
+    }
+
+    std::string_view codecName(fm::Codec codec) {
+        switch (codec) {
+            case fm::Codec::JPEG:
+                return "JPEG";
+            case fm::Codec::H264:
+                return "H.264";
+        }
+        return "unknown codec";
+    }
+
+    std::string_view endReasonText(fm::SessionEndReason reason) {
+        switch (reason) {
+            case fm::SessionEndReason::REPLACED:
+                return "another tablet took over";
+            case fm::SessionEndReason::BYE:
+                return "the tablet closed it";
+            case fm::SessionEndReason::TIMEOUT:
+                return "the tablet stopped answering";
+            case fm::SessionEndReason::CLOSED:
+                return "the host is closing";
+        }
+        return "unknown reason";
+    }
+
+    std::string_view rejectReasonText(fm::RejectReason reason) {
+        switch (reason) {
+            case fm::RejectReason::UNSUPPORTED_VERSION:
+                return "it speaks another protocol version";
+            case fm::RejectReason::NO_COMMON_CODEC:
+                return "no codec in common";
+            case fm::RejectReason::INVALID_PARAMETERS:
+                return "its HELLO has invalid parameters";
+        }
+        return "unknown reason";
+    }
+
+    class SessionEvents final : public fm::HostSessionListener {
+    public:
+        std::optional<fm::StreamInfo> startedStream;
+
+        void sessionStarted(std::uint32_t sessionId, const fm::TabletInfo& tablet,
+                            const fm::StreamInfo& stream) noexcept override {
+            std::println("Tablet {:08X} connected: screen {}x{} at {} Hz. Streaming {} {}x{} at {} fps.", sessionId,
+                         tablet.width, tablet.height, tablet.refreshHz, codecName(stream.codec), stream.width,
+                         stream.height, stream.fps);
+            startedStream = stream;
+        }
+
+        void streamingStarted(std::uint32_t sessionId) noexcept override {
+            std::println("Tablet {:08X} is ready. Streaming started.", sessionId);
+        }
+
+        void sessionEnded(std::uint32_t sessionId, fm::SessionEndReason reason) noexcept override {
+            std::println("Session {:08X} ended: {}.", sessionId, endReasonText(reason));
+        }
+
+        void helloRejected(std::uint32_t sessionId, fm::RejectReason reason) noexcept override {
+            std::println("Rejected tablet {:08X}: {}.", sessionId, rejectReasonText(reason));
+        }
+    };
+
+    struct EncoderSlot {
+        std::unique_ptr<fm::Encoder> encoder;
+        fm::EncoderConfig config;
+        bool configured = false;
+
+        bool needsConfigure(const fm::CapturedFrame& frame) const {
+            return !configured || frame.width != config.width || frame.height != config.height ||
+                   frame.format != config.inputFormat;
+        }
+    };
+
+    fm::Result<> configureFor(EncoderSlot& slot, const fm::CapturedFrame& frame) {
+        slot.config.width = frame.width;
+        slot.config.height = frame.height;
+        slot.config.inputFormat = frame.format;
+        slot.configured = false;
+        if (auto configured = slot.encoder->configure(slot.config); !configured) {
+            return configured;
+        }
+        slot.configured = true;
+        std::println("Encoding {}x{} with {}", slot.config.width, slot.config.height, slot.encoder->description());
+        return {};
+    }
+
+    fm::HostOffer offerFor(const EncoderSlot& slot) {
+        fm::HostOffer offer;
+        offer.width = static_cast<std::uint16_t>(slot.config.width & ~1U);
+        offer.height = static_cast<std::uint16_t>(slot.config.height & ~1U);
+        offer.fps = static_cast<std::uint16_t>(slot.config.framesPerSecond);
+        offer.codecs = slot.encoder->codec() == fm::Codec::H264
+                               ? static_cast<std::uint8_t>(fm::CodecFlags::JPEG | fm::CodecFlags::H264)
+                               : fm::CodecFlags::JPEG;
+        return offer;
+    }
+
+    void receiveControlPackets(fm::UDPSocket& udpSocket, fm::HostSessions& sessions,
+                               std::span<std::uint8_t> buffer) noexcept {
+        fm::Endpoint from;
+        for (std::size_t count = 0; count < MAX_CONTROL_PACKETS_PER_PASS; ++count) {
+            const auto received = udpSocket.receiveFrom(buffer, from, std::chrono::milliseconds(0));
+            if (received.status == fm::ReceiveStatus::NO_DATAGRAM ||
+                received.status == fm::ReceiveStatus::RECEIVE_FAILED) {
+                return;
+            }
+            if (received.status == fm::ReceiveStatus::RECEIVED) {
+                sessions.handlePacket(buffer.first(received.size), from, received.arrivalTime);
+            }
+        }
+    }
+
+    void printTabletReport(const std::optional<fm::TabletReport>& report, std::optional<fm::Stats>& previousStats) {
+        if (!report) {
+            previousStats.reset();
+            std::println("     | waiting for a tablet on UDP port {}", fm::HOST_PORT);
+            return;
+        }
+        const std::string roundTrip =
+                report->roundTripTime
+                        ? std::format("{:.1f} ms",
+                                      std::chrono::duration<double, std::milli>(*report->roundTripTime).count())
+                        : std::string("unknown");
+        const bool sameSession = report->stats && previousStats &&
+                                 previousStats->commonHeader.sessionId == report->stats->commonHeader.sessionId;
+        const bool firstStats = report->stats && !sameSession;
+        if (firstStats) {
+            previousStats = report->stats;
+            const fm::Stats& stats = *report->stats;
+            std::println("     | tablet: RTT {} | first STATS: {} packets, {} lost, {} frames completed, {} dropped "
+                         "since the session started",
+                         roundTrip, stats.packetsReceived, stats.packetsLost, stats.framesCompleted,
+                         stats.framesDropped);
+            return;
+        }
+        std::optional<fm::StatsDifference> difference;
+        if (report->stats) {
+            difference = fm::statsDifference(*previousStats, *report->stats);
+            previousStats = report->stats;
+        }
+        if (!difference) {
+            std::println("     | tablet: RTT {} | no new STATS yet", roundTrip);
+            return;
+        }
+        const double seconds = std::chrono::duration<double>(difference->interval).count();
+        const auto lost = static_cast<double>(std::max<std::int32_t>(0, difference->packetsLost));
+        const double expected = static_cast<double>(difference->packetsReceived) + lost;
+        std::println("     | tablet: RTT {} | received {:6.1f} Mbit/s {:6} packets/s | loss {:5.2f}% | frames {} "
+                     "completed {} dropped",
+                     roundTrip, static_cast<double>(difference->bytesReceived) * 8.0 / seconds / BITS_PER_MEGABIT,
+                     static_cast<int>(static_cast<double>(difference->packetsReceived) / seconds + 0.5),
+                     expected > 0.0 ? lost / expected * PERCENT : 0.0, difference->framesCompleted,
+                     difference->framesDropped);
     }
 }
 
@@ -125,27 +294,36 @@ int main(int argumentCount, char** arguments) {
         return 2;
     }
 
-    std::optional<fm::UDPSocket> udpSocket;
-    std::optional<fm::VideoSender> videoSender;
-    fm::Session session;
-    if (options->destination) {
-        auto opened = fm::UDPSocket::open(fm::Endpoint{fm::ANY_IP_ADDRESS, 0});
-        if (!opened) {
-            std::println(stderr, "Could not open the UDP socket: {}", opened.error().message);
-            return 1;
+    const fm::Endpoint bindTo{fm::ANY_IP_ADDRESS, options->destination ? std::uint16_t{0} : fm::HOST_PORT};
+    auto opened = fm::UDPSocket::open(bindTo);
+    if (!opened) {
+        std::println(stderr, "Could not open the UDP socket: {}", opened.error().message);
+        if (!options->destination) {
+            std::println(stderr, "Is another FreeMonitor host already using UDP port {}?", fm::HOST_PORT);
         }
-        udpSocket.emplace(std::move(*opened));
-        const auto sendBufferSize = udpSocket->setSendBufferSize(SEND_BUFFER_SIZE);
-        if (!sendBufferSize || *sendBufferSize < SEND_BUFFER_SIZE) {
-            std::println(stderr, "Warning: the send buffer is smaller than {} bytes. Raise net.core.wmem_max.",
-                         SEND_BUFFER_SIZE);
-        }
+        return 1;
+    }
+    fm::UDPSocket udpSocket = std::move(*opened);
+    const auto sendBufferSize = udpSocket.setSendBufferSize(SEND_BUFFER_SIZE);
+    if (!sendBufferSize || *sendBufferSize < SEND_BUFFER_SIZE) {
+        std::println(stderr, "Warning: the send buffer is smaller than {} bytes. Raise net.core.wmem_max.",
+                     SEND_BUFFER_SIZE);
+    }
 
-        std::random_device randomDevice;
-        session = fm::Session{.peer = *options->destination, .sessionId = 0, .nextSeq = randomDevice()};
-        videoSender.emplace(*udpSocket, randomDevice());
+    std::random_device randomDevice;
+    fm::VideoSender videoSender(udpSocket, randomDevice());
+    fm::Session developmentSession;
+    fm::UDPControlTransport controlTransport(udpSocket);
+    SessionEvents sessionEvents;
+    std::optional<fm::HostSessions> sessions;
+    if (options->destination) {
+        developmentSession = fm::Session{.peer = *options->destination, .sessionId = 0, .nextSeq = randomDevice()};
         std::print("Development mode: streaming with sessionId 0 to ");
         printEndpoint(*options->destination);
+    } else {
+        sessions.emplace(controlTransport, sessionEvents, fm::HostOffer{},
+                         [&randomDevice] { return static_cast<std::uint32_t>(randomDevice()); });
+        std::println("Waiting for a tablet on UDP port {}.", fm::HOST_PORT);
     }
 
     std::unique_ptr<fm::FrameTimingLog> timingLog;
@@ -177,13 +355,21 @@ int main(int argumentCount, char** arguments) {
     std::signal(SIGINT, onStopSignal);
     std::signal(SIGTERM, onStopSignal);
 
-    auto encoder = fm::createEncoder(options->encoder);
-    fm::EncoderConfig encoderConfig;
-    encoderConfig.jpegQuality = options->jpegQuality;
-    encoderConfig.bitrateKbps = options->bitrateKbps;
-    encoderConfig.framesPerSecond = options->displayMode.refreshRateHz;
-    bool encoderConfigured = false;
+    EncoderSlot mainEncoder;
+    mainEncoder.encoder = fm::createEncoder(options->encoder);
+    mainEncoder.config.jpegQuality = options->jpegQuality;
+    mainEncoder.config.bitrateKbps = options->bitrateKbps;
+    mainEncoder.config.framesPerSecond = options->displayMode.refreshRateHz;
+    EncoderSlot jpegEncoder;
+    jpegEncoder.config = mainEncoder.config;
+    EncoderSlot* activeEncoder = &mainEncoder;
     std::optional<Clock::time_point> lastKeyframeTime;
+    bool keyframeOwed = false;
+    bool lastSentWasRepeat = true;
+    std::optional<Clock::time_point> lastNewFrameSentTime;
+    std::optional<Clock::time_point> lastRepeatTime;
+    std::array<std::uint8_t, fm::MAX_CONTROL_PACKET_SIZE> controlBuffer{};
+    std::optional<fm::Stats> reportedStats;
 
     const auto startTime = Clock::now();
     const auto deadline =
@@ -196,6 +382,7 @@ int main(int argumentCount, char** arguments) {
     IntervalStatistics captureToSendTimes;
     SizeStatistics encodedSizes;
     std::uint64_t periodFrames = 0;
+    std::uint64_t periodRepeats = 0;
     std::uint64_t encodeFailures = 0;
     std::uint64_t periodPackets = 0;
     std::uint64_t periodBytes = 0;
@@ -205,45 +392,139 @@ int main(int argumentCount, char** arguments) {
     fm::CapturedFrame capturedFrame;
     fm::EncodedFrame encodedFrame;
     while (!stopRequested.load() && Clock::now() < deadline) {
-        const auto status = captureSource->acquireFrame(capturedFrame, CAPTURE_TIMEOUT);
+        if (sessions && mainEncoder.configured) {
+            receiveControlPackets(udpSocket, *sessions, controlBuffer);
+            if (const auto stream = std::exchange(sessionEvents.startedStream, std::nullopt)) {
+                if (stream->codec == mainEncoder.encoder->codec()) {
+                    activeEncoder = &mainEncoder;
+                } else {
+                    if (!jpegEncoder.encoder) {
+                        jpegEncoder.encoder = fm::createEncoder(fm::EncoderChoice::JPEG);
+                    }
+                    activeEncoder = &jpegEncoder;
+                }
+            }
+            sessions->poll(Clock::now());
+            if (sessions->takeKeyframeRequest()) {
+                keyframeOwed = true;
+            }
+        }
+
+        const auto now = Clock::now();
+        if (now - periodStart >= REPORT_INTERVAL) {
+            const double periodSeconds = std::chrono::duration<double>(now - periodStart).count();
+            std::println("{:4} fps | frame interval min {:6.2f} avg {:6.2f} max {:6.2f} ms | capture to acquire avg "
+                         "{:5.2f} max {:5.2f} ms | {}x{} | encode failures {}",
+                         static_cast<int>(static_cast<double>(periodFrames) / periodSeconds + 0.5),
+                         frameIntervals.minimumMilliseconds(), frameIntervals.averageMilliseconds(),
+                         frameIntervals.maximumMilliseconds(), captureDelays.averageMilliseconds(),
+                         captureDelays.maximumMilliseconds(), mainEncoder.config.width, mainEncoder.config.height,
+                         encodeFailures);
+            std::println(
+                    "     | encode avg {:6.2f} max {:6.2f} ms | frame avg {:7.1f} max {:7.1f} KB | repeated frames {}",
+                    encodeTimes.averageMilliseconds(), encodeTimes.maximumMilliseconds(),
+                    encodedSizes.averageKilobytes(), encodedSizes.maximumKilobytes(), periodRepeats);
+            if (!sessions || sessions->streamingSession() != nullptr) {
+                std::println("     | send {:7.1f} Mbit/s {:6} packets/s | capture to send avg {:6.2f} max {:6.2f} ms | "
+                             "send failures {}",
+                             static_cast<double>(periodBytes) * 8.0 / periodSeconds / BITS_PER_MEGABIT,
+                             static_cast<int>(static_cast<double>(periodPackets) / periodSeconds + 0.5),
+                             captureToSendTimes.averageMilliseconds(), captureToSendTimes.maximumMilliseconds(),
+                             sendFailures);
+            }
+            if (sessions) {
+                printTabletReport(sessions->report(), reportedStats);
+            }
+            periodStart = now;
+            periodFrames = 0;
+            periodRepeats = 0;
+            periodPackets = 0;
+            periodBytes = 0;
+            frameIntervals = {};
+            captureDelays = {};
+            encodeTimes = {};
+            captureToSendTimes = {};
+            encodedSizes = {};
+        }
+
+        if (!sessions && lastKeyframeTime && now - *lastKeyframeTime >= KEYFRAME_INTERVAL) {
+            keyframeOwed = true;
+        }
+
+        auto status = captureSource->acquireFrame(capturedFrame, CAPTURE_TIMEOUT);
         if (status == fm::CaptureStatus::CAPTURE_LOST) {
             std::println(stderr, "Capture lost");
             exitCode = 1;
             break;
         }
+        bool repeated = false;
+        if (status == fm::CaptureStatus::NO_NEW_FRAME && (!sessions || sessions->streamingSession() != nullptr)) {
+            const auto idleTime = Clock::now();
+            const bool refreshDue = !lastSentWasRepeat && lastNewFrameSentTime &&
+                                    idleTime - *lastNewFrameSentTime >= IDLE_REFRESH_DELAY &&
+                                    (!lastRepeatTime || idleTime - *lastRepeatTime >= IDLE_REFRESH_MIN_INTERVAL);
+            if ((keyframeOwed || refreshDue) &&
+                captureSource->repeatLastFrame(capturedFrame) == fm::CaptureStatus::FRAME_READY) {
+                status = fm::CaptureStatus::FRAME_READY;
+                repeated = true;
+            }
+        }
         if (status == fm::CaptureStatus::FRAME_READY) {
             const auto acquireTime = Clock::now();
             fm::FrameTiming timing{.captureUs = fm::toTimestampUs(capturedFrame.captureTime),
                                    .acquireUs = fm::toTimestampUs(acquireTime)};
-            captureDelays.add(acquireTime - capturedFrame.captureTime);
-            if (previousCaptureTime) {
-                frameIntervals.add(capturedFrame.captureTime - *previousCaptureTime);
+            if (repeated) {
+                ++periodRepeats;
+            } else {
+                captureDelays.add(acquireTime - capturedFrame.captureTime);
+                if (previousCaptureTime) {
+                    frameIntervals.add(capturedFrame.captureTime - *previousCaptureTime);
+                }
+                previousCaptureTime = capturedFrame.captureTime;
+                ++periodFrames;
             }
-            previousCaptureTime = capturedFrame.captureTime;
 
-            if (!encoderConfigured || capturedFrame.width != encoderConfig.width ||
-                capturedFrame.height != encoderConfig.height || capturedFrame.format != encoderConfig.inputFormat) {
-                encoderConfig.width = capturedFrame.width;
-                encoderConfig.height = capturedFrame.height;
-                encoderConfig.inputFormat = capturedFrame.format;
-                if (const auto configured = encoder->configure(encoderConfig); !configured) {
+            if (mainEncoder.needsConfigure(capturedFrame)) {
+                const auto previousCodec = mainEncoder.encoder->codec();
+                if (const auto configured = configureFor(mainEncoder, capturedFrame); !configured) {
                     std::println(stderr, "Could not set up the encoder: {}", configured.error().message);
                     captureSource->releaseFrame();
                     exitCode = 1;
                     break;
                 }
-                encoderConfigured = true;
-                std::println("Encoding {}x{} with {}", encoderConfig.width, encoderConfig.height,
-                             encoder->description());
+                if (sessions) {
+                    sessions->setOffer(offerFor(mainEncoder));
+                    const auto codec = mainEncoder.encoder->codec();
+                    if (previousCodec && codec != previousCodec && activeEncoder == &mainEncoder &&
+                        sessions->streamingSession() != nullptr) {
+                        std::println("The encoder changed to {}. Ending the session. Reconnect the tablet by hand.",
+                                     codecName(codec.value_or(fm::Codec::JPEG)));
+                        sessions->close(acquireTime);
+                    }
+                }
             }
-            if (lastKeyframeTime && acquireTime - *lastKeyframeTime >= KEYFRAME_INTERVAL) {
-                encoder->requestKeyframe();
+
+            fm::Session* target = sessions ? sessions->streamingSession() : &developmentSession;
+            if (target == nullptr) {
+                captureSource->releaseFrame();
+                continue;
+            }
+            if (activeEncoder->needsConfigure(capturedFrame)) {
+                if (const auto configured = configureFor(*activeEncoder, capturedFrame); !configured) {
+                    std::println(stderr, "Could not set up the encoder: {}", configured.error().message);
+                    captureSource->releaseFrame();
+                    exitCode = 1;
+                    break;
+                }
+            }
+            if (keyframeOwed || repeated) {
+                activeEncoder->encoder->requestKeyframe();
             }
             const auto encodeStart = Clock::now();
-            const bool encoded = encoder->encode(capturedFrame, encodedFrame) == fm::EncodeStatus::FRAME_ENCODED;
+            const bool encoded =
+                    activeEncoder->encoder->encode(capturedFrame, encodedFrame) == fm::EncodeStatus::FRAME_ENCODED;
             const auto encodeEnd = Clock::now();
             captureSource->releaseFrame();
-            ++periodFrames;
             timing.encodeStartUs = fm::toTimestampUs(encodeStart);
             timing.encodeEndUs = fm::toTimestampUs(encodeEnd);
 
@@ -260,63 +541,49 @@ int main(int argumentCount, char** arguments) {
                 timing.codec = encodedFrame.codec;
                 timing.keyframe = encodedFrame.keyframe;
                 timing.frameBytes = static_cast<std::uint32_t>(encodedFrame.data.size());
-                if (videoSender) {
-                    const auto sendStart = Clock::now();
-                    const auto sendResult = videoSender->send(encodedFrame, encodedFrame.codec, session);
-                    const auto sendEnd = Clock::now();
-                    periodPackets += sendResult.packetsSent;
-                    periodBytes += sendResult.bytesSent;
-                    timing.frameId = sendResult.frameId;
-                    timing.packetsSent = sendResult.packetsSent;
-                    timing.sendStartUs = fm::toTimestampUs(sendStart);
-                    timing.sendEndUs = fm::toTimestampUs(sendEnd);
-                    if (sendResult.status == fm::FrameSendStatus::FRAME_SENT) {
-                        captureToSendTimes.add(sendEnd - encodedFrame.captureTime);
-                        timing.outcome = fm::FrameOutcome::SENT;
-                    } else {
-                        ++sendFailures;
-                        timing.outcome = fm::FrameOutcome::SEND_FAILED;
+                const auto sendStart = Clock::now();
+                const auto sendResult = videoSender.send(encodedFrame, encodedFrame.codec, *target);
+                const auto sendEnd = Clock::now();
+                periodPackets += sendResult.packetsSent;
+                periodBytes += sendResult.bytesSent;
+                timing.frameId = sendResult.frameId;
+                timing.packetsSent = sendResult.packetsSent;
+                timing.sendStartUs = fm::toTimestampUs(sendStart);
+                timing.sendEndUs = fm::toTimestampUs(sendEnd);
+                if (sendResult.status == fm::FrameSendStatus::FRAME_SENT) {
+                    timing.outcome = fm::FrameOutcome::SENT;
+                    if (encodedFrame.keyframe) {
+                        keyframeOwed = false;
+                        if (sessions) {
+                            sessions->keyframeSent(sendEnd);
+                        }
                     }
+                    lastSentWasRepeat = repeated;
+                    if (repeated) {
+                        lastRepeatTime = sendEnd;
+                    } else {
+                        lastNewFrameSentTime = sendEnd;
+                        captureToSendTimes.add(sendEnd - encodedFrame.captureTime);
+                    }
+                } else {
+                    ++sendFailures;
+                    timing.outcome = fm::FrameOutcome::SEND_FAILED;
                 }
             }
-            if (timingLog) {
+            if (timingLog && !repeated) {
                 timingLog->record(timing);
             }
         }
-
-        const auto now = Clock::now();
-        if (now - periodStart >= REPORT_INTERVAL) {
-            const double periodSeconds = std::chrono::duration<double>(now - periodStart).count();
-            std::println("{:4} fps | frame interval min {:6.2f} avg {:6.2f} max {:6.2f} ms | capture to acquire avg "
-                         "{:5.2f} max {:5.2f} ms | {}x{} | encode failures {}",
-                         static_cast<int>(static_cast<double>(periodFrames) / periodSeconds + 0.5),
-                         frameIntervals.minimumMilliseconds(), frameIntervals.averageMilliseconds(),
-                         frameIntervals.maximumMilliseconds(), captureDelays.averageMilliseconds(),
-                         captureDelays.maximumMilliseconds(), encoderConfig.width, encoderConfig.height,
-                         encodeFailures);
-            std::println("     | encode avg {:6.2f} max {:6.2f} ms | frame avg {:7.1f} max {:7.1f} KB",
-                         encodeTimes.averageMilliseconds(), encodeTimes.maximumMilliseconds(),
-                         encodedSizes.averageKilobytes(), encodedSizes.maximumKilobytes());
-            if (videoSender) {
-                std::println("     | send {:7.1f} Mbit/s {:6} packets/s | capture to send avg {:6.2f} max {:6.2f} ms | "
-                             "send failures {}",
-                             static_cast<double>(periodBytes) * 8.0 / periodSeconds / BITS_PER_MEGABIT,
-                             static_cast<int>(static_cast<double>(periodPackets) / periodSeconds + 0.5),
-                             captureToSendTimes.averageMilliseconds(), captureToSendTimes.maximumMilliseconds(),
-                             sendFailures);
-            }
-            periodStart = now;
-            periodFrames = 0;
-            periodPackets = 0;
-            periodBytes = 0;
-            frameIntervals = {};
-            captureDelays = {};
-            encodeTimes = {};
-            captureToSendTimes = {};
-            encodedSizes = {};
-        }
     }
 
+    if (sessions) {
+        sessions->close(Clock::now());
+        const auto byeDeadline = Clock::now() + BYE_WAIT_LIMIT;
+        while (sessions->closing() && Clock::now() < byeDeadline) {
+            std::this_thread::sleep_for(BYE_WAIT_STEP);
+            sessions->poll(Clock::now());
+        }
+    }
     captureSource->stop();
     std::println("Stopped after {:.1f} s", std::chrono::duration<double>(Clock::now() - startTime).count());
     if (timingLog) {

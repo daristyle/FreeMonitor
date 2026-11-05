@@ -2,6 +2,7 @@ package io.github.daristyle.freemonitor
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,7 +15,7 @@ import java.nio.ByteBuffer
 class FrameReceiverTests {
     @Test
     fun anIdleReceiverReturnsNoFrameAndZeroStatistics() {
-        FrameReceiver(ANY_FREE_PORT).use { receiver ->
+        FrameReceiver.development(ANY_FREE_PORT).use { receiver ->
             val frameBuffer = ByteArray(NativeBridge.maxFrameSize())
             assertEquals(0, receiver.nextFrame(frameBuffer, FrameInfo(), SHORT_TIMEOUT_MS))
             assertEquals(ReceiverStatistics(0, 0, 0, 0, 0, 0, 0), receiver.statistics())
@@ -36,7 +37,7 @@ class FrameReceiverTests {
         codec: Codec,
     ) {
         val port = DatagramSocket(ANY_FREE_PORT).use { it.localPort }
-        FrameReceiver(port).use { receiver ->
+        FrameReceiver.development(port).use { receiver ->
             val payload = ByteArray(PAYLOAD_SIZE) { (it * 7).toByte() }
             val sentUs = nowUs()
             DatagramSocket().use { sender ->
@@ -63,7 +64,7 @@ class FrameReceiverTests {
 
     @Test
     fun closingTwiceIsHarmless() {
-        val receiver = FrameReceiver(ANY_FREE_PORT)
+        val receiver = FrameReceiver.development(ANY_FREE_PORT)
         receiver.close()
         receiver.close()
     }
@@ -71,7 +72,8 @@ class FrameReceiverTests {
     @Test
     fun aTakenPortThrowsWithAMessage() {
         DatagramSocket(InetSocketAddress(ANY_FREE_PORT)).use { occupied ->
-            val error = assertThrows(IllegalStateException::class.java) { FrameReceiver(occupied.localPort) }
+            val error =
+                assertThrows(IllegalStateException::class.java) { FrameReceiver.development(occupied.localPort) }
             assertEquals(true, error.message?.isNotEmpty())
         }
     }
@@ -79,6 +81,94 @@ class FrameReceiverTests {
     @Test
     fun theFrameBufferHoldsTheLargestFrame() {
         assertEquals(4 * 1024 * 1024, NativeBridge.maxFrameSize())
+    }
+
+    @Test
+    fun aDevelopmentReceiverHasNoSessionStatus() {
+        FrameReceiver.development(ANY_FREE_PORT).use { receiver -> assertNull(receiver.sessionStatus()) }
+    }
+
+    @Test
+    fun aSessionReceiverSendsAHelloAndReportsThatItIsConnecting() {
+        DatagramSocket(InetSocketAddress(IPV4_LOOPBACK, ANY_FREE_PORT)).use { host ->
+            host.soTimeout = LONG_TIMEOUT_MS
+            openSessionReceiver(host).use { receiver ->
+                val hello = receivePacket(host)
+                assertEquals(HELLO_SIZE, hello.limit())
+                assertEquals(HELLO, hello.get(TYPE_OFFSET))
+                assertEquals(SCREEN_WIDTH, hello.getShort(WIDTH_OFFSET).toInt() and U16_MASK)
+                assertEquals(SCREEN_HEIGHT, hello.getShort(HEIGHT_OFFSET).toInt() and U16_MASK)
+                assertEquals(REFRESH_HZ, hello.getShort(REFRESH_OFFSET).toInt() and U16_MASK)
+                assertEquals(BOTH_CODECS, hello.get(CODECS_OFFSET))
+
+                val status = waitForSessionStatus(receiver) { it.state == SessionState.CONNECTING }
+                assertEquals(hello.getInt(SESSION_ID_OFFSET).toLong() and U32_MASK, status.sessionId)
+                assertEquals(RejectReason.UNKNOWN, status.rejectReason)
+                assertNull(status.roundTripUs)
+                assertEquals(0, status.width)
+                assertEquals(0, status.height)
+                assertEquals(0, status.framesPerSecond)
+                assertEquals(1L, status.sessionCount)
+            }
+        }
+    }
+
+    @Test
+    fun closingASessionReceiverSendsThreeByes() {
+        DatagramSocket(InetSocketAddress(IPV4_LOOPBACK, ANY_FREE_PORT)).use { host ->
+            host.soTimeout = LONG_TIMEOUT_MS
+            val receiver = openSessionReceiver(host)
+            val sessionId = receivePacket(host).getInt(SESSION_ID_OFFSET)
+            receiver.close()
+            var byes = 0
+            while (byes < BYE_COUNT) {
+                val packet = receivePacket(host)
+                if (packet.get(TYPE_OFFSET) == BYE) {
+                    assertEquals(sessionId, packet.getInt(SESSION_ID_OFFSET))
+                    ++byes
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aHostThatIsNotIPv4WithAPortThrowsWithAMessage() {
+        val error =
+            assertThrows(IllegalStateException::class.java) {
+                FrameReceiver.session("localhost", SCREEN_WIDTH, SCREEN_HEIGHT, REFRESH_HZ)
+            }
+        assertTrue(error.message.orEmpty().contains("IPv4:port"))
+    }
+
+    @Test
+    fun aScreenSizeOfZeroThrows() {
+        assertThrows(IllegalStateException::class.java) {
+            FrameReceiver.session("$IPV4_LOOPBACK:$ANY_PORT_NUMBER", 0, SCREEN_HEIGHT, REFRESH_HZ)
+        }
+    }
+
+    private fun openSessionReceiver(host: DatagramSocket): FrameReceiver =
+        FrameReceiver.session("$IPV4_LOOPBACK:${host.localPort}", SCREEN_WIDTH, SCREEN_HEIGHT, REFRESH_HZ)
+
+    private fun receivePacket(socket: DatagramSocket): ByteBuffer {
+        val buffer = ByteArray(CONTROL_BUFFER_SIZE)
+        val packet = DatagramPacket(buffer, buffer.size)
+        socket.receive(packet)
+        return ByteBuffer.wrap(buffer, 0, packet.length).slice()
+    }
+
+    private fun waitForSessionStatus(
+        receiver: FrameReceiver,
+        condition: (SessionStatus) -> Boolean,
+    ): SessionStatus {
+        val deadline = System.nanoTime() + LONG_TIMEOUT_MS * NANOSECONDS_PER_MILLISECOND
+        while (true) {
+            val status = checkNotNull(receiver.sessionStatus())
+            if (condition(status) || System.nanoTime() >= deadline) {
+                return status
+            }
+            Thread.sleep(STATUS_POLL_MS)
+        }
     }
 
     private fun videoFragment(
@@ -128,5 +218,25 @@ class FrameReceiverTests {
         const val H264: Byte = 1
         const val KEYFRAME_FLAG: Byte = 1
         const val NANOSECONDS_PER_MICROSECOND = 1000L
+        const val NANOSECONDS_PER_MILLISECOND = 1_000_000L
+        const val STATUS_POLL_MS = 5L
+        const val CONTROL_BUFFER_SIZE = 64
+        const val SCREEN_WIDTH = 2944
+        const val SCREEN_HEIGHT = 1840
+        const val REFRESH_HZ = 60
+        const val ANY_PORT_NUMBER = 50500
+        const val HELLO: Byte = 0x20
+        const val BYE: Byte = 0x27
+        const val HELLO_SIZE = 40
+        const val BYE_COUNT = 3
+        const val TYPE_OFFSET = 3
+        const val SESSION_ID_OFFSET = 4
+        const val WIDTH_OFFSET = 32
+        const val HEIGHT_OFFSET = 34
+        const val REFRESH_OFFSET = 36
+        const val CODECS_OFFSET = 38
+        const val BOTH_CODECS: Byte = 3
+        const val U16_MASK = 0xFFFF
+        const val U32_MASK = 0xFFFF_FFFFL
     }
 }

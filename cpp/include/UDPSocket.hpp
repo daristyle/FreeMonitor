@@ -40,6 +40,7 @@ namespace fm {
     struct ReceiveResult {
         ReceiveStatus status = ReceiveStatus::NO_DATAGRAM;
         std::size_t size = 0;
+        std::chrono::steady_clock::time_point arrivalTime{};
     };
 
     class UDPSocket {

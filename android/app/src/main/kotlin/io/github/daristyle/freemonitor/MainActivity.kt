@@ -18,6 +18,7 @@ import java.io.File
 import java.io.IOException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import kotlin.math.roundToInt
 
 class MainActivity :
     Activity(),
@@ -29,6 +30,7 @@ class MainActivity :
     private var receiver: FrameReceiver? = null
     private var timingLog: FrameTimingLog? = null
     private var renderer: FrameRenderer? = null
+    private var sessionHost: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,6 +60,8 @@ class MainActivity :
                 )
             }
         setContentView(container)
+        container.setOnClickListener { receiver?.reconnect() }
+        sessionHost = chooseSessionHost()
         addSurfaceView()
         window.insetsController?.let { controller ->
             controller.hide(WindowInsets.Type.systemBars())
@@ -67,13 +71,22 @@ class MainActivity :
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        val host = sessionHost
         val newReceiver =
             try {
-                FrameReceiver(RECEIVE_PORT)
+                if (host == null) FrameReceiver.development(RECEIVE_PORT) else openSessionReceiver(host)
             } catch (error: IllegalStateException) {
-                waitingView.text = getString(R.string.receiver_failed, RECEIVE_PORT, error.message)
+                waitingView.text =
+                    if (host == null) {
+                        getString(R.string.receiver_failed, RECEIVE_PORT, error.message)
+                    } else {
+                        getString(R.string.session_failed, host, error.message)
+                    }
                 return
             }
+        if (host != null) {
+            saveHost(host)
+        }
         receiver = newReceiver
         timingLog = if (intent.getBooleanExtra(TIMING_LOG_EXTRA, false)) openTimingLog() else null
         val view = surfaceView
@@ -102,6 +115,30 @@ class MainActivity :
         timingLog = null
         receiver?.close()
         receiver = null
+    }
+
+    private fun chooseSessionHost(): String? {
+        if (intent.getBooleanExtra(DEVELOPMENT_EXTRA, false)) {
+            return null
+        }
+        val requested = intent.getStringExtra(HOST_EXTRA)?.trim()?.takeIf { it.isNotEmpty() }
+        val host = requested ?: getPreferences(MODE_PRIVATE).getString(HOST_PREFERENCE, null)
+        return host?.let { if (':' in it) it else "$it:$HOST_PORT" }
+    }
+
+    private fun saveHost(host: String) {
+        getPreferences(MODE_PRIVATE).edit().putString(HOST_PREFERENCE, host).apply()
+    }
+
+    private fun openSessionReceiver(host: String): FrameReceiver {
+        val mode = display?.mode
+        val metrics = resources.displayMetrics
+        val width =
+            mode?.let { maxOf(it.physicalWidth, it.physicalHeight) } ?: maxOf(metrics.widthPixels, metrics.heightPixels)
+        val height =
+            mode?.let { minOf(it.physicalWidth, it.physicalHeight) } ?: minOf(metrics.widthPixels, metrics.heightPixels)
+        val refreshHz = (mode?.refreshRate ?: DEFAULT_REFRESH_HZ).roundToInt()
+        return FrameReceiver.session(host, width, height, refreshHz)
     }
 
     private fun openTimingLog(): FrameTimingLog? {
@@ -151,35 +188,74 @@ class MainActivity :
     }
 
     private fun showWaiting() {
+        val host = sessionHost
+        if (host != null) {
+            waitingView.text = getString(R.string.session_connecting, host)
+            return
+        }
         val address = NetworkAddress.localIPAddress(this) ?: getString(R.string.unknown_address)
         waitingView.text = getString(R.string.waiting_for_host, address, RECEIVE_PORT)
     }
 
     private fun onRenderStatus(status: RenderStatus) {
         statusView.post {
+            val session = status.session
             val sinceLastFrame = status.millisecondsSinceLastFrame
-            if (sinceLastFrame == null || sinceLastFrame >= NO_FRAMES_TIMEOUT_MS) {
-                showWaiting()
+            val showingVideo =
+                sinceLastFrame != null &&
+                    sinceLastFrame < NO_FRAMES_TIMEOUT_MS &&
+                    (session == null || session.state == SessionState.CONNECTED)
+            if (!showingVideo) {
+                if (session == null) showWaiting() else waitingView.text = sessionText(session)
                 waitingView.visibility = TextView.VISIBLE
                 statusView.text = ""
             } else {
                 waitingView.visibility = TextView.GONE
-                statusView.text =
-                    getString(
-                        R.string.render_status,
-                        status.framesPerSecond,
-                        status.codec?.label ?: getString(R.string.no_codec),
-                        status.statistics.framesDropped,
-                        status.statistics.framesReplaced,
-                        status.statistics.invalidPackets,
-                        status.framesWaitingForKeyframe,
-                    )
+                statusView.text = renderStatusText(status)
             }
         }
     }
 
+    private fun renderStatusText(status: RenderStatus): String {
+        val text =
+            getString(
+                R.string.render_status,
+                status.framesPerSecond,
+                status.codec?.label ?: getString(R.string.no_codec),
+                status.statistics.framesDropped,
+                status.statistics.framesReplaced,
+                status.statistics.invalidPackets,
+                status.framesWaitingForKeyframe,
+            )
+        val roundTripUs = status.session?.roundTripUs ?: return text
+        return text + getString(R.string.round_trip_status, roundTripUs / MICROSECONDS_PER_MILLISECOND)
+    }
+
+    private fun sessionText(session: SessionStatus): String {
+        val host = sessionHost.orEmpty()
+        return when (session.state) {
+            SessionState.CONNECTED -> getString(R.string.session_connected, host)
+            SessionState.REJECTED -> getString(R.string.session_rejected, host, rejectReasonText(session.rejectReason))
+            SessionState.ENDED_BY_HOST -> getString(R.string.session_ended, host)
+            SessionState.CONNECTING, SessionState.IDLE -> getString(R.string.session_connecting, host)
+        }
+    }
+
+    private fun rejectReasonText(reason: RejectReason): String =
+        getString(
+            when (reason) {
+                RejectReason.UNSUPPORTED_VERSION -> R.string.reject_unsupported_version
+                RejectReason.NO_COMMON_CODEC -> R.string.reject_no_common_codec
+                RejectReason.INVALID_PARAMETERS -> R.string.reject_invalid_parameters
+                RejectReason.UNKNOWN -> R.string.reject_unknown
+            },
+        )
+
     private companion object {
         const val RECEIVE_PORT = 50500
+        const val HOST_PORT = 50500
+        const val DEFAULT_REFRESH_HZ = 60f
+        const val MICROSECONDS_PER_MILLISECOND = 1000f
         const val NO_FRAMES_TIMEOUT_MS = 3000L
         const val WAITING_TEXT_SIZE_SP = 28f
         const val STATUS_TEXT_SIZE_SP = 12f
@@ -187,6 +263,9 @@ class MainActivity :
         const val STATUS_PADDING_DP = 8f
         const val TAG = "FreeMonitor"
         const val TIMING_LOG_EXTRA = "timingLog"
+        const val HOST_EXTRA = "host"
+        const val DEVELOPMENT_EXTRA = "development"
+        const val HOST_PREFERENCE = "host"
         const val TIMING_DIRECTORY = "timing"
         val timingFileTimeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
     }

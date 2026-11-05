@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -178,4 +179,43 @@ TEST_CASE("producer and consumer threads never see a torn frame") {
     stop.store(true);
     producer.join();
     CHECK(framesChecked > 0);
+}
+
+TEST_CASE("acquireLast hands out the last read frame again, untouched by newer frames") {
+    TestMailbox mailbox;
+    mailbox.reserve(FRAME_BYTES);
+    TestFrame frame;
+    std::span<const std::uint8_t> bytes;
+    CHECK(mailbox.acquireLast(frame, bytes) == fm::MailboxStatus::NO_NEW_FRAME);
+
+    publishFilled(mailbox, 7);
+    REQUIRE(acquire(mailbox, 0ms).status == fm::MailboxStatus::FRAME_READY);
+    mailbox.release();
+    publishFilled(mailbox, 8);
+    publishFilled(mailbox, 9);
+
+    REQUIRE(mailbox.acquireLast(frame, bytes) == fm::MailboxStatus::FRAME_READY);
+    CHECK(frame.number == 7);
+    REQUIRE(bytes.size() == FRAME_BYTES);
+    CHECK(std::ranges::all_of(bytes, [](std::uint8_t value) { return value == 7; }));
+    mailbox.release();
+
+    const auto newest = acquire(mailbox, 0ms);
+    REQUIRE(newest.status == fm::MailboxStatus::FRAME_READY);
+    CHECK(newest.frame.number == 9);
+    mailbox.release();
+}
+
+TEST_CASE("acquireLast reports CLOSED after close and has nothing after reset") {
+    TestMailbox mailbox;
+    mailbox.reserve(FRAME_BYTES);
+    publishFilled(mailbox, 1);
+    REQUIRE(acquire(mailbox, 0ms).status == fm::MailboxStatus::FRAME_READY);
+    mailbox.release();
+    TestFrame frame;
+    std::span<const std::uint8_t> bytes;
+    mailbox.close();
+    CHECK(mailbox.acquireLast(frame, bytes) == fm::MailboxStatus::CLOSED);
+    mailbox.reset();
+    CHECK(mailbox.acquireLast(frame, bytes) == fm::MailboxStatus::NO_NEW_FRAME);
 }

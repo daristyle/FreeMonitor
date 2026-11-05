@@ -102,6 +102,13 @@ TEST_CASE("createEncoder returns the JPEG encoder for JPEG") {
     CHECK(encoder->description() == "JPEG");
 }
 
+TEST_CASE("the JPEG encoder reports JPEG as its codec, before and after configure") {
+    fm::JPEGEncoder encoder;
+    CHECK(encoder.codec() == fm::Codec::JPEG);
+    REQUIRE(encoder.configure(makeConfig()));
+    CHECK(encoder.codec() == fm::Codec::JPEG);
+}
+
 TEST_CASE("JPEG configure rejects bad settings") {
     fm::JPEGEncoder encoder;
     auto config = makeConfig();

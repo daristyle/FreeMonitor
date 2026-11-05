@@ -6,4 +6,5 @@ data class RenderStatus(
     val codec: Codec?,
     val framesWaitingForKeyframe: Int,
     val statistics: ReceiverStatistics,
+    val session: SessionStatus?,
 )

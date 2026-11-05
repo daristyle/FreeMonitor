@@ -29,6 +29,7 @@ namespace fm {
         Result<> start(const CaptureTarget& target) override;
         void stop() override;
         CaptureStatus acquireFrame(CapturedFrame& frame, std::chrono::milliseconds timeout) noexcept override;
+        CaptureStatus repeatLastFrame(CapturedFrame& frame) noexcept override;
         void releaseFrame() noexcept override;
     };
 }

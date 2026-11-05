@@ -105,6 +105,10 @@ namespace fm {
         return "JPEG";
     }
 
+    std::optional<Codec> JPEGEncoder::codec() const noexcept {
+        return Codec::JPEG;
+    }
+
     bool JPEGEncoder::compress(const CapturedFrame& input, int quality, std::size_t& jpegSize) noexcept {
         if (::tj3Set(handle.get(), TJPARAM_QUALITY, quality) != 0) {
             return false;

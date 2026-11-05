@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace fm {
@@ -45,6 +46,7 @@ namespace fm {
         virtual EncodeStatus encode(const CapturedFrame& input, EncodedFrame& output) noexcept = 0;
         virtual void requestKeyframe() noexcept = 0;
         virtual std::string_view description() const noexcept = 0;
+        virtual std::optional<Codec> codec() const noexcept = 0;
     };
 
     std::unique_ptr<Encoder> createEncoder(EncoderChoice choice);

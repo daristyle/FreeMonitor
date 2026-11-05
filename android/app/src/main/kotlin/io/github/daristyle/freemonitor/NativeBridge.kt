@@ -15,6 +15,14 @@ object NativeBridge {
     external fun createReceiver(port: Int): Long
 
     @JvmStatic
+    external fun createSessionReceiver(
+        host: String,
+        width: Int,
+        height: Int,
+        refreshHz: Int,
+    ): Long
+
+    @JvmStatic
     external fun nextFrame(
         handle: Long,
         destination: ByteArray,
@@ -24,6 +32,15 @@ object NativeBridge {
 
     @JvmStatic
     external fun receiverStatistics(handle: Long): LongArray
+
+    @JvmStatic
+    external fun requestKeyframe(handle: Long)
+
+    @JvmStatic
+    external fun reconnect(handle: Long)
+
+    @JvmStatic
+    external fun sessionStatus(handle: Long): LongArray
 
     @JvmStatic
     external fun destroyReceiver(handle: Long)

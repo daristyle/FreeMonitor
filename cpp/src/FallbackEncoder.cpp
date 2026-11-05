@@ -48,4 +48,11 @@ namespace fm {
         return activeDescription;
     }
 
+    std::optional<Codec> FallbackEncoder::codec() const noexcept {
+        if (active == nullptr) {
+            return std::nullopt;
+        }
+        return active->codec();
+    }
+
 }

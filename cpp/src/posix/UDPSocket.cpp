@@ -1,12 +1,18 @@
 #include "UDPSocket.hpp"
 
+#include "posix/ReceiveTimestamp.hpp"
+
 #include <arpa/inet.h>
+#include <array>
 #include <cerrno>
 #include <climits>
+#include <cstring>
+#include <ctime>
 #include <netinet/in.h>
 #include <poll.h>
 #include <string>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <system_error>
 #include <unistd.h>
 
@@ -49,21 +55,47 @@ namespace fm {
             return code == EAGAIN || code == EWOULDBLOCK || code == EINTR;
         }
 
+        std::chrono::steady_clock::time_point arrivalTime(msghdr& message,
+                                                          std::chrono::steady_clock::time_point readTime) {
+            for (cmsghdr* control = CMSG_FIRSTHDR(&message); control != nullptr;
+                 control = CMSG_NXTHDR(&message, control)) {
+                if (control->cmsg_level != SOL_SOCKET || control->cmsg_type != SCM_TIMESTAMPNS) {
+                    continue;
+                }
+                timespec kernelTime{};
+                std::memcpy(&kernelTime, CMSG_DATA(control), sizeof(kernelTime));
+                timespec wallTime{};
+                if (::clock_gettime(CLOCK_REALTIME, &wallTime) != 0) {
+                    return readTime;
+                }
+                return arrivalFromKernelTime(readTime, wallTime, kernelTime);
+            }
+            return readTime;
+        }
+
         ReceiveResult receiveNow(int handle, std::span<std::uint8_t> buffer, Endpoint& from) {
             sockaddr_in address{};
-            socklen_t addressSize = sizeof(address);
-            const ssize_t received = ::recvfrom(handle, buffer.data(), buffer.size(), MSG_TRUNC,
-                                                reinterpret_cast<sockaddr*>(&address), &addressSize);
+            iovec data{buffer.data(), buffer.size()};
+            alignas(cmsghdr) std::array<char, CMSG_SPACE(sizeof(timespec))> control{};
+            msghdr message{};
+            message.msg_name = &address;
+            message.msg_namelen = sizeof(address);
+            message.msg_iov = &data;
+            message.msg_iovlen = 1;
+            message.msg_control = control.data();
+            message.msg_controllen = control.size();
+            const ssize_t received = ::recvmsg(handle, &message, MSG_TRUNC);
             if (received < 0) {
                 return {isTransient(errno) ? ReceiveStatus::NO_DATAGRAM : ReceiveStatus::RECEIVE_FAILED, 0};
             }
 
             from = toEndpoint(address);
+            const auto arrival = arrivalTime(message, std::chrono::steady_clock::now());
             const auto datagramSize = static_cast<std::size_t>(received);
             if (datagramSize > buffer.size()) {
-                return {ReceiveStatus::TRUNCATED, buffer.size()};
+                return {ReceiveStatus::TRUNCATED, buffer.size(), arrival};
             }
-            return {ReceiveStatus::RECEIVED, datagramSize};
+            return {ReceiveStatus::RECEIVED, datagramSize, arrival};
         }
 
         Result<int> setBufferSize(int handle, int option, int bytes, const char* operation) {
@@ -85,6 +117,8 @@ namespace fm {
             return std::unexpected(systemError("socket"));
         }
         UDPSocket udpSocket(static_cast<std::uintptr_t>(handle));
+        const int receiveTimestamps = 1;
+        ::setsockopt(handle, SOL_SOCKET, SO_TIMESTAMPNS, &receiveTimestamps, sizeof(receiveTimestamps));
 
         const sockaddr_in address = toSockaddr(bindTo);
         if (::bind(handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
