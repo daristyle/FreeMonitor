@@ -114,13 +114,13 @@ namespace fm {
         if (!isValidFragment(fragment)) {
             return FragmentStatus::INVALID;
         }
+        expire(now);
         if (const Slot* existing = findSlot(fragment.frameId); existing != nullptr && !matches(*existing, fragment)) {
             return FragmentStatus::INVALID;
         }
         if (lastDeliveredFrameId.has_value() && !isNewer(fragment.frameId, *lastDeliveredFrameId)) {
             return FragmentStatus::TOO_OLD;
         }
-        expire(now);
         Slot* slot = findSlot(fragment.frameId);
         if (slot == nullptr) {
             slot = claimSlot(fragment.frameId);

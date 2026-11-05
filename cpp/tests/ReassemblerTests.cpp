@@ -340,6 +340,19 @@ TEST_CASE("an invalid fragment does not run the timeout") {
     CHECK(reassembler.framesDropped() == 1);
 }
 
+TEST_CASE("a fragment that disagrees with a frame that has timed out starts a new frame") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestFrame resent = makeTestFrame(THREE_FRAGMENTS, 5, fm::Codec::JPEG, true, 5678);
+    fm::Reassembler reassembler;
+    REQUIRE(feed(reassembler, frame, {0}, START) == Status::ACCEPTED);
+
+    const Clock::time_point timedOut = START + std::chrono::milliseconds(fm::FRAGMENT_TIMEOUT_MS);
+    CHECK(feed(reassembler, resent, {1}, timedOut) == Status::ACCEPTED);
+    CHECK(reassembler.framesDropped() == 1);
+    CHECK(feed(reassembler, resent, {0, 2}, timedOut) == Status::FRAME_COMPLETE);
+    CHECK(reassembler.completedFrame().captureTimestampUs == 5678);
+}
+
 TEST_CASE("reset forgets frames, the last delivered frameId and the counters") {
     const TestFrame older = makeTestFrame(100, 5);
     const TestFrame delivered = makeTestFrame(100, 10);

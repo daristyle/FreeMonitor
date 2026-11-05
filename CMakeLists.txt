@@ -173,6 +173,9 @@ if(FM_BUILD_TESTS)
     target_compile_options(fm_test_warnings INTERFACE $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-c2y-extensions>)
     target_link_libraries(fm_tests PRIVATE fm_host fm_platform fm_protocol fm_warnings fm_test_warnings Catch2::Catch2WithMain)
 
+    add_executable(fm_conformance cpp/tests/ConformanceTool.cpp)
+    target_link_libraries(fm_conformance PRIVATE fm_protocol fm_warnings)
+
     enable_testing()
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
     include(Catch)
