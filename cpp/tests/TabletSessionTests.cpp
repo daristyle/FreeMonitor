@@ -130,6 +130,17 @@ TEST_CASE("a WELCOME the tablet cannot use is dropped without an ACK") {
     CHECK(tablet.session.state() == fm::TabletState::CONNECTING);
 }
 
+TEST_CASE("the tablet keeps FEC when it asked for it and the host grants it") {
+    fm::TabletSettings settings = SETTINGS;
+    settings.features = fm::FeatureFlags::FEC;
+    TabletFixture tablet(settings);
+    tablet.session.start(START);
+    tablet.session.handlePacket(welcomePacket(tablet.id(), 9000, 1, fm::Codec::H264, 2944, 1840, fm::FeatureFlags::FEC),
+                                HOST_ADDRESS, START + 10ms);
+    CHECK(tablet.session.state() == fm::TabletState::CONNECTED);
+    CHECK(tablet.session.stream().features == fm::FeatureFlags::FEC);
+}
+
 TEST_CASE("feature bits the tablet does not know are ignored and do not stop the WELCOME") {
     fm::TabletSettings settings = SETTINGS;
     settings.features = fm::FeatureFlags::CURSOR_OVERLAY;

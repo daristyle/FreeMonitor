@@ -21,5 +21,9 @@ namespace fm {
         static Result<std::filesystem::path> defaultSocketPath();
 
         Result<std::string> request(std::string_view command) const;
+
+        const std::filesystem::path& path() const noexcept {
+            return socketPath;
+        }
     };
 }

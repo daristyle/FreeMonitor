@@ -1,5 +1,7 @@
 #include "Fragmenter.hpp"
 
+#include "ReedSolomon.hpp"
+
 #include <algorithm>
 
 namespace fm {
@@ -39,5 +41,31 @@ namespace fm {
         packet.payload =
                 frameData.subspan(offset, std::min<std::size_t>(MAX_FRAGMENT_PAYLOAD, frameData.size() - offset));
         return packet.write(packetBuffer);
+    }
+
+    std::size_t Fragmenter::writeParity(std::uint16_t parityIndex, std::uint16_t parityCount, std::uint32_t sessionId,
+                                        std::uint32_t seq, std::uint64_t timestampUs,
+                                        std::span<std::uint8_t> packetBuffer) const noexcept {
+        const std::size_t blockSize = fecBlockSize(fragment.frameSize);
+        if (parityIndex >= parityCount || packetBuffer.size() < VideoParity::SIZE + blockSize) {
+            return 0;
+        }
+        VideoParity packet;
+        packet.commonHeader.sessionId = sessionId;
+        packet.commonHeader.seq = seq;
+        packet.commonHeader.timestampUs = timestampUs;
+        packet.frameId = fragment.frameId;
+        packet.parityIndex = parityIndex;
+        packet.fragCount = fragment.fragCount;
+        packet.frameSize = fragment.frameSize;
+        packet.codec = fragment.codec;
+        packet.flags = fragment.flags;
+        packet.parityCount = parityCount;
+        packet.captureTimestampUs = fragment.captureTimestampUs;
+        if (packet.write(packetBuffer) != VideoParity::SIZE ||
+            !computeParity(frameData, parityIndex, packetBuffer.subspan(VideoParity::SIZE, blockSize))) {
+            return 0;
+        }
+        return VideoParity::SIZE + blockSize;
     }
 }

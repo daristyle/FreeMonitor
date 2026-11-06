@@ -89,6 +89,7 @@ namespace fm {
                 .ignoredPackets = ignoredPackets.load(std::memory_order_relaxed),
                 .framesCompleted = framesCompleted.load(std::memory_order_relaxed),
                 .framesDropped = framesDropped.load(std::memory_order_relaxed),
+                .framesRepaired = framesRepaired.load(std::memory_order_relaxed),
                 .framesReplaced = mailbox.droppedFrameCount(),
                 .senderRestarts = senderRestarts.load(std::memory_order_relaxed),
         };
@@ -177,9 +178,15 @@ namespace fm {
             return;
         }
         const std::uint32_t expectedSessionId = session ? session->sessionId() : sessionId;
-        if (header.type != static_cast<std::uint8_t>(PacketType::VIDEO_FRAGMENT) ||
+        const bool parityPacket = header.type == static_cast<std::uint8_t>(PacketType::VIDEO_PARITY) && session &&
+                                  (session->stream().features & FeatureFlags::FEC) != 0;
+        if ((header.type != static_cast<std::uint8_t>(PacketType::VIDEO_FRAGMENT) && !parityPacket) ||
             header.sessionId != expectedSessionId) {
             ignoredPackets.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (parityPacket) {
+            handleParity(packet, arrival);
             return;
         }
         VideoFragment fragment;
@@ -195,6 +202,21 @@ namespace fm {
             lastCompletion = arrival;
             status = reassembler.accept(fragment, arrival);
         }
+        noteFragmentStatus(status, arrival);
+    }
+
+    void FrameReceiver::handleParity(std::span<const std::uint8_t> packet,
+                                     std::chrono::steady_clock::time_point arrival) noexcept {
+        VideoParity parity;
+        if (!parity.read(packet)) {
+            invalidPackets.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        noteFragmentStatus(reassembler.accept(parity, arrival), arrival);
+    }
+
+    void FrameReceiver::noteFragmentStatus(FragmentStatus status,
+                                           std::chrono::steady_clock::time_point arrival) noexcept {
         if (status == FragmentStatus::INVALID) {
             invalidPackets.fetch_add(1, std::memory_order_relaxed);
         } else if (status == FragmentStatus::FRAME_COMPLETE) {
@@ -210,6 +232,9 @@ namespace fm {
         mailbox.publish(frame, frameBytes);
         lastCompletion = now;
         framesCompleted.fetch_add(1, std::memory_order_relaxed);
+        if (frame.repaired) {
+            framesRepaired.fetch_add(1, std::memory_order_relaxed);
+        }
         if (session) {
             session->frameCompleted();
             if (frame.keyframe) {

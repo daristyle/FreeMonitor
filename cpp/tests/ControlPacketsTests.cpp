@@ -108,6 +108,8 @@ TEST_CASE("isMediaPacket accepts video and cursor packets with a valid header") 
     fm::CommonHeader header;
     header.type = static_cast<std::uint8_t>(fm::PacketType::VIDEO_FRAGMENT);
     CHECK(fm::isMediaPacket(header));
+    header.type = static_cast<std::uint8_t>(fm::PacketType::VIDEO_PARITY);
+    CHECK(fm::isMediaPacket(header));
     header.type = static_cast<std::uint8_t>(fm::PacketType::CURSOR_SHAPE);
     CHECK(fm::isMediaPacket(header));
     header.type = static_cast<std::uint8_t>(fm::PacketType::ACK);

@@ -58,6 +58,15 @@ TEST_CASE("create twice is INVALID_STATE until the display is destroyed") {
     CHECK(virtualDisplay.create(TEST_MODE));
 }
 
+TEST_CASE("stillExists follows create and destroy") {
+    fm::StubVirtualDisplay virtualDisplay;
+    CHECK_FALSE(virtualDisplay.stillExists());
+    REQUIRE(virtualDisplay.create(TEST_MODE));
+    CHECK(virtualDisplay.stillExists());
+    virtualDisplay.destroy();
+    CHECK_FALSE(virtualDisplay.stillExists());
+}
+
 TEST_CASE("destroy is safe when no display exists") {
     fm::StubVirtualDisplay virtualDisplay;
     virtualDisplay.destroy();

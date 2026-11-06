@@ -24,10 +24,12 @@ namespace {
 
     constexpr int BAD_INPUT = 2;
     constexpr std::size_t FRAGMENT_ARGUMENT_COUNT = 7;
+    constexpr std::size_t PARITY_ARGUMENT_COUNT = 8;
     constexpr std::string_view HEX_DIGITS = "0123456789abcdef";
     constexpr std::string_view USAGE =
             "usage: fm_conformance fragment <sessionId> <firstSeq> <frameId> <codec> <keyframe> <captureTimestampUs> "
-            "<timestampUs> | reassemble <sessionId> | packet";
+            "<timestampUs> | parity <sessionId> <firstSeq> <frameId> <codec> <keyframe> <captureTimestampUs> "
+            "<timestampUs> <parityCount> | reassemble <sessionId> | packet";
 
     int fail(std::string_view message) {
         std::println(stderr, "fm_conformance: {}", message);
@@ -77,10 +79,7 @@ namespace {
         return header.magic == fm::MAGIC && header.version == fm::PROTOCOL_VERSION && header.headerReserved == 0;
     }
 
-    int runFragment(std::span<const std::string_view> arguments) {
-        if (arguments.size() != FRAGMENT_ARGUMENT_COUNT) {
-            return fail(USAGE);
-        }
+    int writeFrame(std::span<const std::string_view> arguments, std::optional<std::uint16_t> parityCount) {
         const auto sessionId = parseNumber<std::uint32_t>(arguments[0]);
         const auto firstSeq = parseNumber<std::uint32_t>(arguments[1]);
         const auto frameId = parseNumber<std::uint32_t>(arguments[2]);
@@ -96,7 +95,7 @@ namespace {
 
         std::string line;
         if (!std::getline(std::cin, line)) {
-            return fail("fragment needs one line of frame data on stdin");
+            return fail("this command needs one line of frame data on stdin");
         }
         const auto frame = parseHex(line);
         if (!frame) {
@@ -110,31 +109,41 @@ namespace {
         }
         std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
         std::uint32_t seq = *firstSeq;
-        for (std::uint16_t fragIndex = 0; fragIndex < fragmenter.fragmentCount(); ++fragIndex) {
-            const std::size_t size = fragmenter.write(fragIndex, *sessionId, seq, *timestampUs, packet);
+        const std::uint16_t packetCount = parityCount.value_or(fragmenter.fragmentCount());
+        for (std::uint16_t index = 0; index < packetCount; ++index) {
+            const std::size_t size =
+                    parityCount ? fragmenter.writeParity(index, *parityCount, *sessionId, seq, *timestampUs, packet)
+                                : fragmenter.write(index, *sessionId, seq, *timestampUs, packet);
+            if (size == 0) {
+                std::println("INVALID");
+                return 0;
+            }
             std::println("{}", toHex(std::span(packet).first(size)));
             ++seq;
         }
         return 0;
     }
 
-    void reassemblePacket(fm::Reassembler& reassembler, std::uint32_t sessionId, std::span<const std::uint8_t> packet,
-                          Clock::time_point now) {
-        fm::CommonHeader header;
-        if (!header.read(packet) || !isValidHeader(header)) {
-            std::println("INVALID");
-            return;
+    int runFragment(std::span<const std::string_view> arguments) {
+        if (arguments.size() != FRAGMENT_ARGUMENT_COUNT) {
+            return fail(USAGE);
         }
-        if (header.type != static_cast<std::uint8_t>(fm::PacketType::VIDEO_FRAGMENT) || header.sessionId != sessionId) {
-            std::println("IGNORED");
-            return;
+        return writeFrame(arguments, std::nullopt);
+    }
+
+    int runParity(std::span<const std::string_view> arguments) {
+        if (arguments.size() != PARITY_ARGUMENT_COUNT) {
+            return fail(USAGE);
         }
-        fm::VideoFragment fragment;
-        if (!fragment.read(packet)) {
-            std::println("INVALID");
-            return;
+        const auto parityCount = parseNumber<std::uint16_t>(arguments.back());
+        if (!parityCount) {
+            return fail(USAGE);
         }
-        switch (reassembler.accept(fragment, now)) {
+        return writeFrame(arguments.first(FRAGMENT_ARGUMENT_COUNT), parityCount);
+    }
+
+    void printStatus(const fm::Reassembler& reassembler, fm::FragmentStatus status) {
+        switch (status) {
             case fm::FragmentStatus::ACCEPTED:
                 std::println("ACCEPTED");
                 break;
@@ -153,6 +162,36 @@ namespace {
                              frame.keyframe ? 1 : 0, frame.captureTimestampUs, toHex(frame.data));
                 break;
             }
+        }
+    }
+
+    template<typename Packet>
+    void acceptPacket(fm::Reassembler& reassembler, std::span<const std::uint8_t> bytes, Clock::time_point now) {
+        Packet packet;
+        if (!packet.read(bytes)) {
+            std::println("INVALID");
+            return;
+        }
+        printStatus(reassembler, reassembler.accept(packet, now));
+    }
+
+    void reassemblePacket(fm::Reassembler& reassembler, std::uint32_t sessionId, std::span<const std::uint8_t> packet,
+                          Clock::time_point now) {
+        fm::CommonHeader header;
+        if (!header.read(packet) || !isValidHeader(header)) {
+            std::println("INVALID");
+            return;
+        }
+        if (header.sessionId != sessionId) {
+            std::println("IGNORED");
+            return;
+        }
+        if (header.type == static_cast<std::uint8_t>(fm::PacketType::VIDEO_FRAGMENT)) {
+            acceptPacket<fm::VideoFragment>(reassembler, packet, now);
+        } else if (header.type == static_cast<std::uint8_t>(fm::PacketType::VIDEO_PARITY)) {
+            acceptPacket<fm::VideoParity>(reassembler, packet, now);
+        } else {
+            std::println("IGNORED");
         }
     }
 
@@ -203,6 +242,8 @@ namespace {
         switch (static_cast<fm::PacketType>(header.type)) {
             case fm::PacketType::VIDEO_FRAGMENT:
                 return rewrite<fm::VideoFragment>(bytes);
+            case fm::PacketType::VIDEO_PARITY:
+                return rewrite<fm::VideoParity>(bytes);
             case fm::PacketType::CURSOR_POS:
                 return rewrite<fm::CursorPos>(bytes);
             case fm::PacketType::CURSOR_SHAPE:
@@ -258,6 +299,9 @@ int main(int argumentCount, char** arguments) {
     const auto commandArguments = std::span(argumentList).subspan(1);
     if (command == "fragment") {
         return runFragment(commandArguments);
+    }
+    if (command == "parity") {
+        return runParity(commandArguments);
     }
     if (command == "reassemble") {
         return runReassemble(commandArguments);

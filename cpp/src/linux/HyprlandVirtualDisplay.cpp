@@ -1,22 +1,35 @@
 #include "linux/HyprlandVirtualDisplay.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fcntl.h>
+#include <filesystem>
 #include <format>
 #include <iterator>
+#include <ranges>
+#include <sys/file.h>
+#include <system_error>
 #include <thread>
 #include <utility>
 
 namespace fm {
     namespace {
+        constexpr mode_t LOCK_FILE_MODE = 0600;
         constexpr std::string_view MONITOR_PREFIX = "Monitor ";
         constexpr std::string_view MONITOR_ID_SEPARATOR = " (ID ";
         constexpr std::string_view POSITION_SEPARATOR = " at ";
         constexpr std::string_view SCALE_PREFIX = "scale: ";
         constexpr std::string_view TRANSFORM_PREFIX = "transform: ";
+        constexpr std::string_view FOCUSED_LINE = "focused: yes";
+        constexpr std::string_view WORKSPACE_PREFIX = "workspace ID ";
+        constexpr std::string_view WORKSPACE_MONITOR_SEPARATOR = " on monitor ";
+        constexpr std::string_view WORKSPACE_WINDOWS_PREFIX = "\twindows: ";
+        constexpr std::string_view RULE_PREFIX = "Workspace rule ";
+        constexpr std::string_view RULE_MONITOR_PREFIX = "\tmonitor: ";
 
         template<typename T>
         std::optional<T> parseValue(std::string_view text) {
@@ -170,12 +183,65 @@ namespace fm {
                     return std::nullopt;
                 }
                 pending->monitor.transform = *transform;
+            } else if (line == FOCUSED_LINE) {
+                pending->monitor.focused = true;
             }
         }
         if (!finishPending()) {
             return std::nullopt;
         }
         return monitors;
+    }
+
+    std::optional<std::vector<HyprlandWorkspace>> parseHyprlandWorkspaces(std::string_view reply) {
+        std::vector<HyprlandWorkspace> workspaces;
+        while (!reply.empty()) {
+            const std::size_t lineEnd = reply.find('\n');
+            std::string_view line = reply.substr(0, lineEnd);
+            reply.remove_prefix(lineEnd == std::string_view::npos ? reply.size() : lineEnd + 1);
+
+            if (line.starts_with(WORKSPACE_PREFIX)) {
+                line.remove_prefix(WORKSPACE_PREFIX.size());
+                const std::size_t idEnd = line.find(' ');
+                const std::size_t separator = line.rfind(WORKSPACE_MONITOR_SEPARATOR);
+                if (idEnd == std::string_view::npos || separator == std::string_view::npos || !line.ends_with(':')) {
+                    return std::nullopt;
+                }
+                const auto id = parseValue<std::int32_t>(line.substr(0, idEnd));
+                if (!id) {
+                    return std::nullopt;
+                }
+                line.remove_suffix(1);
+                workspaces.push_back(HyprlandWorkspace{
+                        .id = *id,
+                        .monitor = std::string(line.substr(separator + WORKSPACE_MONITOR_SEPARATOR.size()))});
+            } else if (!workspaces.empty() && line.starts_with(WORKSPACE_WINDOWS_PREFIX)) {
+                const auto windows = parseValue<std::uint32_t>(line.substr(WORKSPACE_WINDOWS_PREFIX.size()));
+                if (!windows) {
+                    return std::nullopt;
+                }
+                workspaces.back().windows = *windows;
+            }
+        }
+        return workspaces;
+    }
+
+    std::vector<std::string> parseWorkspacesBoundTo(std::string_view reply, std::string_view monitorName) {
+        std::vector<std::string> bound;
+        std::string_view workspace;
+        while (!reply.empty()) {
+            const std::size_t lineEnd = reply.find('\n');
+            const std::string_view line = reply.substr(0, lineEnd);
+            reply.remove_prefix(lineEnd == std::string_view::npos ? reply.size() : lineEnd + 1);
+
+            if (line.starts_with(RULE_PREFIX) && line.ends_with(':')) {
+                workspace = line.substr(RULE_PREFIX.size(), line.size() - RULE_PREFIX.size() - 1);
+            } else if (line.starts_with(RULE_MONITOR_PREFIX) &&
+                       line.substr(RULE_MONITOR_PREFIX.size()) == monitorName) {
+                bound.emplace_back(workspace);
+            }
+        }
+        return bound;
     }
 
     HyprlandVirtualDisplay::HyprlandVirtualDisplay(HyprlandIPC ipc, std::string outputName,
@@ -195,6 +261,10 @@ namespace fm {
                     Error{ErrorCode::INVALID_ARGUMENT, "Display size and refresh rate must not be zero"});
         }
 
+        auto lock = lockOutput();
+        if (!lock) {
+            return std::unexpected(lock.error());
+        }
         removeOutput();
         const auto before = readMonitors();
         if (!before) {
@@ -222,6 +292,8 @@ namespace fm {
             return std::unexpected(Error{ErrorCode::INVALID_STATE, moved});
         }
 
+        moveRememberedWorkspaces(*after);
+        hostLock = std::move(*lock);
         created = true;
         return CaptureTarget{outputName, mode.width, mode.height};
     }
@@ -231,7 +303,34 @@ namespace fm {
             return;
         }
         removeOutput();
+        hostLock = FileDescriptor(-1);
         created = false;
+    }
+
+    bool HyprlandVirtualDisplay::stillExists() const {
+        if (!created) {
+            return false;
+        }
+        const auto monitors = readMonitors();
+        return !monitors || std::ranges::find(*monitors, outputName, &HyprlandMonitor::name) != monitors->end();
+    }
+
+    Result<FileDescriptor> HyprlandVirtualDisplay::lockOutput() const {
+        const std::filesystem::path lockPath = ipc.path().parent_path() / ("freemonitor-" + outputName + ".lock");
+        FileDescriptor lock(::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, LOCK_FILE_MODE));
+        if (!lock.isOpen()) {
+            return std::unexpected(Error{ErrorCode::DEVICE_FAILURE, "Cannot open " + lockPath.string() + ": " +
+                                                                            std::system_category().message(errno)});
+        }
+        if (::flock(lock.get(), LOCK_EX | LOCK_NB) != 0) {
+            if (errno == EWOULDBLOCK) {
+                return std::unexpected(Error{ErrorCode::INVALID_STATE, "Another FreeMonitor host is already using " +
+                                                                               outputName + ". Stop it first."});
+            }
+            return std::unexpected(Error{ErrorCode::DEVICE_FAILURE, "Cannot lock " + lockPath.string() + ": " +
+                                                                            std::system_category().message(errno)});
+        }
+        return lock;
     }
 
     Result<> HyprlandVirtualDisplay::command(const std::string& text) const {
@@ -276,6 +375,37 @@ namespace fm {
                                                          expected.y, applyTimeout.count())});
             }
             std::this_thread::sleep_for(POLL_INTERVAL);
+        }
+    }
+
+    void HyprlandVirtualDisplay::moveRememberedWorkspaces(const std::vector<HyprlandMonitor>& monitors) const {
+        auto others = monitors |
+                      std::views::filter([this](const HyprlandMonitor& monitor) { return monitor.name != outputName; });
+        if (others.empty()) {
+            return;
+        }
+        const auto focused = std::ranges::find_if(others, &HyprlandMonitor::focused);
+        const std::string& target = focused != others.end() ? focused->name : others.front().name;
+
+        const auto reply = ipc.request("workspaces");
+        const auto workspaces = reply ? parseHyprlandWorkspaces(*reply) : std::nullopt;
+        if (!workspaces) {
+            return;
+        }
+        const auto rememberedHere = [this](const HyprlandWorkspace& workspace) {
+            return workspace.monitor == outputName && workspace.id > 0 && workspace.windows > 0;
+        };
+        if (std::ranges::none_of(*workspaces, rememberedHere)) {
+            return;
+        }
+
+        const auto rules = ipc.request("workspacerules");
+        const std::vector<std::string> bound =
+                rules ? parseWorkspacesBoundTo(*rules, outputName) : std::vector<std::string>{};
+        for (const HyprlandWorkspace& workspace : *workspaces | std::views::filter(rememberedHere)) {
+            if (std::ranges::find(bound, std::to_string(workspace.id)) == bound.end()) {
+                static_cast<void>(command(std::format("dispatch moveworkspacetomonitor {} {}", workspace.id, target)));
+            }
         }
     }
 

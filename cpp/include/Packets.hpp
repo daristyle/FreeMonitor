@@ -29,11 +29,15 @@ namespace fm {
     constexpr std::uint32_t MAX_INCOMPLETE_FRAMES = 4;
     constexpr std::uint32_t MIN_SHAPE_CACHE_SIZE = 16;
     constexpr std::uint32_t BYE_REPEAT_COUNT = 3;
+    constexpr std::uint32_t MAX_FEC_GROUP_SIZE = 32;
+    constexpr std::uint32_t MAX_FEC_GROUP_PARITY = 16;
     constexpr std::uint32_t MAX_FRAGMENT_PAYLOAD = 1352;
+    constexpr std::uint32_t MAX_PARITY_PAYLOAD = 1352;
     constexpr std::uint32_t MAX_SHAPE_PAYLOAD = 1360;
 
     enum class PacketType : std::uint8_t {
         VIDEO_FRAGMENT = 0x01,
+        VIDEO_PARITY = 0x02,
         CURSOR_POS = 0x10,
         CURSOR_SHAPE = 0x11,
         HELLO = 0x20,
@@ -73,6 +77,7 @@ namespace fm {
 
     struct FeatureFlags {
         static constexpr std::uint8_t CURSOR_OVERLAY = 0x01;
+        static constexpr std::uint8_t FEC = 0x02;
     };
 
     template<typename T>
@@ -201,6 +206,69 @@ namespace fm {
             codec = readBigEndian<std::uint8_t>(source + 36);
             flags = readBigEndian<std::uint8_t>(source + 37);
             reserved = readBigEndian<std::uint16_t>(source + 38);
+            captureTimestampUs = readBigEndian<std::uint64_t>(source + 40);
+            payload = buffer.subspan(SIZE);
+            return true;
+        }
+    };
+
+    struct VideoParity {
+        static constexpr std::size_t SIZE = 48;
+
+        CommonHeader commonHeader = makeCommonHeader(PacketType::VIDEO_PARITY);
+        std::uint32_t frameId = 0;
+        std::uint16_t parityIndex = 0;
+        std::uint16_t fragCount = 0;
+        std::uint32_t frameSize = 0;
+        std::uint8_t codec = 0;
+        std::uint8_t flags = 0;
+        std::uint16_t parityCount = 0;
+        std::uint64_t captureTimestampUs = 0;
+        std::span<const std::uint8_t> payload;
+
+        std::size_t write(std::span<std::uint8_t> buffer) const noexcept {
+            if (buffer.size() < SIZE || buffer.size() - SIZE < payload.size()) {
+                return 0;
+            }
+            std::uint8_t* destination = buffer.data();
+            writeBigEndian(destination, commonHeader.magic);
+            writeBigEndian(destination + 2, commonHeader.version);
+            writeBigEndian(destination + 3, commonHeader.type);
+            writeBigEndian(destination + 4, commonHeader.sessionId);
+            writeBigEndian(destination + 8, commonHeader.seq);
+            writeBigEndian(destination + 12, commonHeader.headerReserved);
+            writeBigEndian(destination + 16, commonHeader.timestampUs);
+            writeBigEndian(destination + 24, frameId);
+            writeBigEndian(destination + 28, parityIndex);
+            writeBigEndian(destination + 30, fragCount);
+            writeBigEndian(destination + 32, frameSize);
+            writeBigEndian(destination + 36, codec);
+            writeBigEndian(destination + 37, flags);
+            writeBigEndian(destination + 38, parityCount);
+            writeBigEndian(destination + 40, captureTimestampUs);
+            std::ranges::copy(payload, destination + SIZE);
+            return SIZE + payload.size();
+        }
+
+        bool read(std::span<const std::uint8_t> buffer) noexcept {
+            if (buffer.size() < SIZE) {
+                return false;
+            }
+            const std::uint8_t* source = buffer.data();
+            commonHeader.magic = readBigEndian<std::uint16_t>(source);
+            commonHeader.version = readBigEndian<std::uint8_t>(source + 2);
+            commonHeader.type = readBigEndian<std::uint8_t>(source + 3);
+            commonHeader.sessionId = readBigEndian<std::uint32_t>(source + 4);
+            commonHeader.seq = readBigEndian<std::uint32_t>(source + 8);
+            commonHeader.headerReserved = readBigEndian<std::uint32_t>(source + 12);
+            commonHeader.timestampUs = readBigEndian<std::uint64_t>(source + 16);
+            frameId = readBigEndian<std::uint32_t>(source + 24);
+            parityIndex = readBigEndian<std::uint16_t>(source + 28);
+            fragCount = readBigEndian<std::uint16_t>(source + 30);
+            frameSize = readBigEndian<std::uint32_t>(source + 32);
+            codec = readBigEndian<std::uint8_t>(source + 36);
+            flags = readBigEndian<std::uint8_t>(source + 37);
+            parityCount = readBigEndian<std::uint16_t>(source + 38);
             captureTimestampUs = readBigEndian<std::uint64_t>(source + 40);
             payload = buffer.subspan(SIZE);
             return true;

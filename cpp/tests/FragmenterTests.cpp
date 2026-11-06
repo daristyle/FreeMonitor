@@ -1,7 +1,9 @@
 #include "Fragmenter.hpp"
+#include "ReedSolomon.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -156,4 +158,64 @@ TEST_CASE("an index past the end or a buffer that is too small writes nothing") 
     CHECK(fragmenter.write(0, SESSION_ID, 0, TIMESTAMP_US, std::span(packet.data(), FULL_PACKET_SIZE - 1)) == 0);
     CHECK(fragmenter.write(0, SESSION_ID, 0, TIMESTAMP_US, std::span(packet.data(), FULL_PACKET_SIZE)) ==
           FULL_PACKET_SIZE);
+}
+
+TEST_CASE("writeParity writes the frame's details and the parity block") {
+    const std::vector<std::uint8_t> frame = makeFrame(3 * fm::MAX_FRAGMENT_PAYLOAD + 10);
+    fm::Fragmenter fragmenter;
+    REQUIRE(fragmenter.begin(frame, 77, fm::Codec::H264, true, 5555));
+
+    PacketBuffer packet{};
+    const std::size_t size = fragmenter.writeParity(1, 2, SESSION_ID, 9, TIMESTAMP_US, packet);
+    REQUIRE(size == fm::VideoParity::SIZE + fm::MAX_PARITY_PAYLOAD);
+
+    fm::VideoParity parity;
+    REQUIRE(parity.read(std::span(packet.data(), size)));
+    CHECK(parity.commonHeader.type == static_cast<std::uint8_t>(fm::PacketType::VIDEO_PARITY));
+    CHECK(parity.commonHeader.sessionId == SESSION_ID);
+    CHECK(parity.commonHeader.seq == 9);
+    CHECK(parity.commonHeader.timestampUs == TIMESTAMP_US);
+    CHECK(parity.frameId == 77);
+    CHECK(parity.parityIndex == 1);
+    CHECK(parity.fragCount == 4);
+    CHECK(parity.frameSize == frame.size());
+    CHECK(parity.codec == static_cast<std::uint8_t>(fm::Codec::H264));
+    CHECK(parity.flags == fm::FragmentFlags::KEYFRAME);
+    CHECK(parity.parityCount == 2);
+    CHECK(parity.captureTimestampUs == 5555);
+
+    std::vector<std::uint8_t> expected(fm::MAX_PARITY_PAYLOAD);
+    REQUIRE(fm::computeParity(frame, 1, expected));
+    CHECK(std::ranges::equal(parity.payload, expected));
+}
+
+TEST_CASE("the parity block of a small frame is as long as the frame") {
+    const std::vector<std::uint8_t> frame = makeFrame(300);
+    fm::Fragmenter fragmenter;
+    REQUIRE(fragmenter.begin(frame, 1, fm::Codec::JPEG, false, 0));
+
+    PacketBuffer packet{};
+    CHECK(fragmenter.writeParity(0, 2, SESSION_ID, 0, TIMESTAMP_US, packet) == fm::VideoParity::SIZE + 300);
+}
+
+TEST_CASE("writeParity refuses a bad index, a small buffer or a missing frame") {
+    const std::vector<std::uint8_t> frame = makeFrame(1000);
+    fm::Fragmenter fragmenter;
+    PacketBuffer packet{};
+
+    SECTION("no frame") {
+        CHECK(fragmenter.writeParity(0, 2, SESSION_ID, 0, TIMESTAMP_US, packet) == 0);
+    }
+    SECTION("a frame that was refused") {
+        REQUIRE(fragmenter.begin(frame, 1, fm::Codec::JPEG, false, 0));
+        REQUIRE_FALSE(fragmenter.begin({}, 2, fm::Codec::JPEG, false, 0));
+        CHECK(fragmenter.writeParity(0, 2, SESSION_ID, 0, TIMESTAMP_US, packet) == 0);
+    }
+    SECTION("bad arguments") {
+        REQUIRE(fragmenter.begin(frame, 1, fm::Codec::JPEG, false, 0));
+        CHECK(fragmenter.writeParity(2, 2, SESSION_ID, 0, TIMESTAMP_US, packet) == 0);
+        CHECK(fragmenter.writeParity(fm::MAX_FEC_GROUP_PARITY, fm::MAX_FEC_GROUP_PARITY + 1, SESSION_ID, 0,
+                                     TIMESTAMP_US, packet) == 0);
+        CHECK(fragmenter.writeParity(0, 2, SESSION_ID, 0, TIMESTAMP_US, std::span(packet).first(100)) == 0);
+    }
 }

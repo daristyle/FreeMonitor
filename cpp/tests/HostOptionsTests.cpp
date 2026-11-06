@@ -26,6 +26,7 @@ TEST_CASE("parseHostOptions uses the defaults without arguments") {
     CHECK_FALSE(options->destination);
     CHECK(options->encoder == fm::EncoderChoice::AUTO);
     CHECK(options->bitrateKbps == fm::EncoderConfig{}.bitrateKbps);
+    CHECK(options->fecPercent == fm::DEFAULT_FEC_PERCENT);
 }
 
 TEST_CASE("parseHostOptions reads the encoder choice") {
@@ -42,6 +43,14 @@ TEST_CASE("parseHostOptions reads the bitrate in Mbit/s") {
     CHECK(parse({"--bitrate", "1"})->bitrateKbps == 1000);
     CHECK(parse({"--bitrate", "35"})->bitrateKbps == 35000);
     CHECK(parse({"--bitrate", "500"})->bitrateKbps == 500000);
+}
+
+TEST_CASE("parseHostOptions reads the FEC percentage") {
+    const auto [text, percent] = GENERATE(std::pair{"0", 0}, std::pair{"45", 45}, std::pair{"100", 100});
+    CAPTURE(text);
+    const auto options = parse({"--fec", text});
+    REQUIRE(options);
+    CHECK(options->fecPercent == percent);
 }
 
 TEST_CASE("parseHostOptions reads the virtual monitor's size, refresh rate and position") {
@@ -93,7 +102,9 @@ TEST_CASE("parseHostOptions rejects bad arguments") {
             std::vector<std::string_view>{"--encoder", "x264"}, std::vector<std::string_view>{"--encoder", "NVENC"},
             std::vector<std::string_view>{"--encoder", ""}, std::vector<std::string_view>{"--bitrate", "0"},
             std::vector<std::string_view>{"--bitrate", "501"}, std::vector<std::string_view>{"--bitrate", "2.5"},
-            std::vector<std::string_view>{"--bitrate", "fast"});
+            std::vector<std::string_view>{"--bitrate", "fast"}, std::vector<std::string_view>{"--fec"},
+            std::vector<std::string_view>{"--fec", "101"}, std::vector<std::string_view>{"--fec", "-1"},
+            std::vector<std::string_view>{"--fec", "lots"});
     const auto options = parse(arguments);
     REQUIRE_FALSE(options);
     CHECK(options.error().code == fm::ErrorCode::INVALID_ARGUMENT);

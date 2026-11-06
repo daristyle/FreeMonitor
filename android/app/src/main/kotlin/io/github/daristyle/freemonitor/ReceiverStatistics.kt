@@ -8,9 +8,10 @@ data class ReceiverStatistics(
     val framesDropped: Long,
     val framesReplaced: Long,
     val senderRestarts: Long,
+    val framesRepaired: Long,
 ) {
     companion object {
-        const val COUNT = 7
+        const val COUNT = 8
 
         fun fromArray(values: LongArray): ReceiverStatistics {
             require(values.size == COUNT) { "Expected $COUNT statistics, got ${values.size}" }
@@ -22,6 +23,7 @@ data class ReceiverStatistics(
                 framesDropped = values[4],
                 framesReplaced = values[5],
                 senderRestarts = values[6],
+                framesRepaired = values[7],
             )
         }
     }

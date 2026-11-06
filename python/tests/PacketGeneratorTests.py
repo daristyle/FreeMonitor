@@ -17,6 +17,7 @@ from tools.PacketGenerator import (
 
 SPEC_PACKET_SIZES = {
     "VideoFragment": 48,
+    "VideoParity": 48,
     "CursorPos": 40,
     "CursorShape": 40,
     "Hello": 40,
@@ -72,7 +73,7 @@ def readSpecConstants():
 
 
 def testSpecConstantsTableIsRead():
-    assert len(readSpecConstants()) == 22
+    assert len(readSpecConstants()) == 25
 
 
 def testConstantsMatchSpec():

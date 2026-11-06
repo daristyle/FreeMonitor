@@ -7,8 +7,8 @@ import org.junit.Test
 class ReceiverStatisticsTests {
     @Test
     fun valuesAreReadInTheNativeOrder() {
-        val statistics = ReceiverStatistics.fromArray(longArrayOf(1, 2, 3, 4, 5, 6, 7))
-        assertEquals(ReceiverStatistics(1, 2, 3, 4, 5, 6, 7), statistics)
+        val statistics = ReceiverStatistics.fromArray(longArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
+        assertEquals(ReceiverStatistics(1, 2, 3, 4, 5, 6, 7, 8), statistics)
     }
 
     @Test

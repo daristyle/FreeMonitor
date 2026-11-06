@@ -21,6 +21,8 @@ DEVELOPMENT_KEYFRAME_INTERVAL_MS = { type = "u32", value = 1000 }
 MAX_INCOMPLETE_FRAMES = { type = "u32", value = 4 }
 MIN_SHAPE_CACHE_SIZE = { type = "u32", value = 16 }
 BYE_REPEAT_COUNT = { type = "u32", value = 3 }
+MAX_FEC_GROUP_SIZE = { type = "u32", value = 32 }
+MAX_FEC_GROUP_PARITY = { type = "u32", value = 16 }
 
 [enums.Codec]
 JPEG = 0
@@ -43,6 +45,7 @@ H264 = 1
 
 [flags.FeatureFlags]
 CURSOR_OVERLAY = 0
+FEC = 1
 
 [headers.CommonHeader]
 fields = [
@@ -75,6 +78,22 @@ fields = [
     { name = "codec", type = "u8" },
     { name = "flags", type = "u8" },
     { name = "reserved", type = "u16", default = 0 },
+    { name = "captureTimestampUs", type = "u64" },
+]
+
+[packets.VIDEO_PARITY]
+className = "VideoParity"
+type = 0x02
+header = "CommonHeader"
+payload = "MAX_PARITY_PAYLOAD"
+fields = [
+    { name = "frameId", type = "u32" },
+    { name = "parityIndex", type = "u16" },
+    { name = "fragCount", type = "u16" },
+    { name = "frameSize", type = "u32" },
+    { name = "codec", type = "u8" },
+    { name = "flags", type = "u8" },
+    { name = "parityCount", type = "u16" },
     { name = "captureTimestampUs", type = "u64" },
 ]
 

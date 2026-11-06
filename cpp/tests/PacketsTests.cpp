@@ -60,6 +60,7 @@ TEST_CASE("packet sizes match the spec") {
     STATIC_REQUIRE(fm::ControlHeader::OFFSET == 24);
     STATIC_REQUIRE(fm::ControlHeader::SIZE == 8);
     STATIC_REQUIRE(fm::VideoFragment::SIZE == 48);
+    STATIC_REQUIRE(fm::VideoParity::SIZE == 48);
     STATIC_REQUIRE(fm::CursorPos::SIZE == 40);
     STATIC_REQUIRE(fm::CursorShape::SIZE == 40);
     STATIC_REQUIRE(fm::Hello::SIZE == 40);
@@ -73,6 +74,7 @@ TEST_CASE("packet sizes match the spec") {
     STATIC_REQUIRE(fm::Reject::SIZE == 36);
     STATIC_REQUIRE(fm::MAX_FRAGMENT_PAYLOAD == 1352);
     STATIC_REQUIRE(fm::MAX_FRAGMENT_PAYLOAD == fm::MAX_PACKET_SIZE - fm::VideoFragment::SIZE);
+    STATIC_REQUIRE(fm::MAX_PARITY_PAYLOAD == fm::MAX_PACKET_SIZE - fm::VideoParity::SIZE);
     STATIC_REQUIRE(fm::MAX_SHAPE_PAYLOAD == fm::MAX_PACKET_SIZE - fm::CursorShape::SIZE);
 }
 
@@ -84,6 +86,7 @@ TEST_CASE("default packets carry the spec's magic, version and their own type") 
         CHECK(header.headerReserved == 0);
     };
     checkDefaults(fm::VideoFragment{}.commonHeader, fm::PacketType::VIDEO_FRAGMENT);
+    checkDefaults(fm::VideoParity{}.commonHeader, fm::PacketType::VIDEO_PARITY);
     checkDefaults(fm::CursorPos{}.commonHeader, fm::PacketType::CURSOR_POS);
     checkDefaults(fm::CursorShape{}.commonHeader, fm::PacketType::CURSOR_SHAPE);
     checkDefaults(fm::Hello{}.commonHeader, fm::PacketType::HELLO);
@@ -132,6 +135,50 @@ TEST_CASE("VIDEO_FRAGMENT bytes match the spec's offsets") {
             0x06, 0x07, 0x01, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xEE, 0xFF,
     };
     CHECK(startsWith(buffer, expected));
+}
+
+TEST_CASE("VIDEO_PARITY bytes match the spec's offsets") {
+    const std::array<std::uint8_t, 2> payload{0xAB, 0xCD};
+    fm::VideoParity packet;
+    packet.frameId = 0x01020304;
+    packet.parityIndex = 0x0506;
+    packet.fragCount = 0x0708;
+    packet.frameSize = 0x090A0B0C;
+    packet.codec = 0x0D;
+    packet.flags = 0x0E;
+    packet.parityCount = 0x0F10;
+    packet.captureTimestampUs = 0x1112131415161718;
+    packet.payload = payload;
+
+    std::array<std::uint8_t, fm::VideoParity::SIZE + 2> buffer{};
+    REQUIRE(packet.write(buffer) == buffer.size());
+    CHECK(buffer[3] == 0x02);
+    const std::array<std::uint8_t, 26> expected{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+                                                0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12,
+                                                0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0xAB, 0xCD};
+    CHECK(std::ranges::equal(std::span(buffer).subspan(24), expected));
+}
+
+TEST_CASE("VIDEO_PARITY round trip") {
+    const std::array<std::uint8_t, 3> payload{1, 2, 3};
+    fm::VideoParity packet;
+    packet.frameId = 9;
+    packet.parityIndex = 2;
+    packet.fragCount = 40;
+    packet.frameSize = 54'000;
+    packet.parityCount = 12;
+    packet.payload = payload;
+
+    std::array<std::uint8_t, fm::MAX_PACKET_SIZE> buffer{};
+    const std::size_t size = packet.write(buffer);
+    fm::VideoParity result;
+    REQUIRE(result.read(std::span(buffer).first(size)));
+    CHECK(result.frameId == 9);
+    CHECK(result.parityIndex == 2);
+    CHECK(result.fragCount == 40);
+    CHECK(result.frameSize == 54'000);
+    CHECK(result.parityCount == 12);
+    CHECK(std::ranges::equal(result.payload, payload));
 }
 
 TEST_CASE("HELLO puts codecs at byte 38 and features at byte 39") {

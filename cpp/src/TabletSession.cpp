@@ -13,7 +13,7 @@ namespace fm {
         constexpr std::chrono::milliseconds BYE_REPEAT_INTERVAL{BYE_REPEAT_INTERVAL_MS};
         constexpr std::chrono::milliseconds KEYFRAME_REQUEST_REPEAT_INTERVAL{KEYFRAME_REQUEST_REPEAT_INTERVAL_MS};
         constexpr std::chrono::milliseconds STATS_INTERVAL{STATS_INTERVAL_MS};
-        constexpr std::uint8_t KNOWN_FEATURES = FeatureFlags::CURSOR_OVERLAY;
+        constexpr std::uint8_t KNOWN_FEATURES = FeatureFlags::CURSOR_OVERLAY | FeatureFlags::FEC;
     }
 
     TabletSession::TabletSession(ControlTransport& transport, TabletSettings settings,

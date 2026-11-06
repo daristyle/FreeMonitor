@@ -18,7 +18,7 @@ class FrameReceiverTests {
         FrameReceiver.development(ANY_FREE_PORT).use { receiver ->
             val frameBuffer = ByteArray(NativeBridge.maxFrameSize())
             assertEquals(0, receiver.nextFrame(frameBuffer, FrameInfo(), SHORT_TIMEOUT_MS))
-            assertEquals(ReceiverStatistics(0, 0, 0, 0, 0, 0, 0), receiver.statistics())
+            assertEquals(ReceiverStatistics(0, 0, 0, 0, 0, 0, 0, 0), receiver.statistics())
         }
     }
 

@@ -1,10 +1,12 @@
 #include "Reassembler.hpp"
+#include "ReedSolomon.hpp"
 #include "Timestamp.hpp"
 #include "VideoSender.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -226,4 +228,108 @@ TEST_CASE("a failed send stops the frame and keeps the seq of the unsent packet"
     const auto fragment = parse(loopback.receive(3)[0]);
     CHECK(fragment.frameId == firstFrameId + 1);
     CHECK(fragment.commonHeader.seq == firstSeq);
+}
+
+TEST_CASE("parity follows a frame's fragments and rebuilds the lost ones") {
+    constexpr std::uint32_t firstSeq = 300;
+    constexpr std::uint32_t firstFrameId = 50;
+    constexpr std::uint16_t fragments = 10;
+    constexpr std::uint16_t parityPackets = 3;
+    constexpr std::size_t frameSize = (fragments - 1) * fm::MAX_FRAGMENT_PAYLOAD + 40;
+
+    Loopback loopback(firstSeq);
+    loopback.session.features = fm::FeatureFlags::FEC;
+    fm::VideoSender videoSender(loopback.sender, firstFrameId);
+    const auto data = makeFrameData(frameSize);
+
+    const auto sent = videoSender.send(makeEncodedFrame(data, true), fm::Codec::H264, loopback.session);
+    REQUIRE(sent.status == fm::FrameSendStatus::FRAME_SENT);
+    CHECK(sent.packetsSent == fragments);
+
+    const auto result = videoSender.sendParity(30, loopback.session);
+    CHECK(result.packetsSent == parityPackets);
+    CHECK(result.bytesSent == parityPackets * (fm::VideoParity::SIZE + fm::MAX_PARITY_PAYLOAD));
+    CHECK(loopback.session.nextSeq == firstSeq + fragments + parityPackets);
+
+    auto packets = loopback.receive(fragments + parityPackets);
+    CHECK(loopback.nothingMoreArrives());
+
+    std::vector<std::vector<std::uint8_t>> blocks;
+    for (std::uint16_t index = 0; index < parityPackets; ++index) {
+        CAPTURE(index);
+        fm::VideoParity parity;
+        REQUIRE(parity.read(packets[fragments + index]));
+        CHECK(parity.commonHeader.sessionId == SESSION_ID);
+        CHECK(parity.commonHeader.seq == firstSeq + fragments + index);
+        CHECK(parity.frameId == firstFrameId);
+        CHECK(parity.parityIndex == index);
+        CHECK(parity.parityCount == parityPackets);
+        blocks.emplace_back(parity.payload.begin(), parity.payload.end());
+    }
+
+    auto damaged = data;
+    for (const std::size_t fragIndex : {2U, 7U}) {
+        const auto first = damaged.begin() + static_cast<std::ptrdiff_t>(fragIndex * fm::MAX_FRAGMENT_PAYLOAD);
+        std::fill_n(first, fm::MAX_FRAGMENT_PAYLOAD, std::uint8_t{0xEE});
+    }
+    const std::array<std::uint16_t, 2> missing{2, 7};
+    const std::array<fm::ParityBlock, 2> parity{fm::ParityBlock{0, blocks[0]}, fm::ParityBlock{2, blocks[2]}};
+    REQUIRE(fm::recoverFragments(damaged, missing, parity));
+    CHECK(damaged == data);
+}
+
+TEST_CASE("no parity goes out without the FEC feature, at 0 percent or after an invalid frame") {
+    constexpr std::uint32_t firstSeq = 1;
+    constexpr std::uint16_t fragments = 3;
+
+    Loopback loopback(firstSeq);
+    fm::VideoSender videoSender(loopback.sender, 1);
+    const auto data = makeFrameData(fragments * fm::MAX_FRAGMENT_PAYLOAD);
+    std::uint8_t percent = 30;
+    std::uint32_t expectedSeq = firstSeq + fragments;
+
+    SECTION("the session has no FEC") {
+        REQUIRE(videoSender.send(makeEncodedFrame(data, true), fm::Codec::JPEG, loopback.session).status ==
+                fm::FrameSendStatus::FRAME_SENT);
+        (void) loopback.receive(fragments);
+    }
+    SECTION("0 percent") {
+        loopback.session.features = fm::FeatureFlags::FEC;
+        percent = 0;
+        REQUIRE(videoSender.send(makeEncodedFrame(data, true), fm::Codec::JPEG, loopback.session).status ==
+                fm::FrameSendStatus::FRAME_SENT);
+        (void) loopback.receive(fragments);
+    }
+    SECTION("an invalid frame") {
+        loopback.session.features = fm::FeatureFlags::FEC;
+        const std::vector<std::uint8_t> empty;
+        REQUIRE(videoSender.send(makeEncodedFrame(empty, true), fm::Codec::JPEG, loopback.session).status ==
+                fm::FrameSendStatus::INVALID_FRAME);
+        expectedSeq = firstSeq;
+    }
+
+    const auto result = videoSender.sendParity(percent, loopback.session);
+    CHECK(result.packetsSent == 0);
+    CHECK(result.bytesSent == 0);
+    CHECK(loopback.session.nextSeq == expectedSeq);
+    CHECK(loopback.nothingMoreArrives());
+}
+
+TEST_CASE("a failed parity send stops the parity and keeps the seq of the unsent packet") {
+    constexpr std::uint32_t firstSeq = 700;
+    constexpr std::uint16_t fragments = 4;
+
+    Loopback loopback(firstSeq);
+    loopback.session.features = fm::FeatureFlags::FEC;
+    fm::VideoSender videoSender(loopback.sender, 1);
+    const auto data = makeFrameData(fragments * fm::MAX_FRAGMENT_PAYLOAD);
+
+    REQUIRE(videoSender.send(makeEncodedFrame(data, true), fm::Codec::JPEG, loopback.session).status ==
+            fm::FrameSendStatus::FRAME_SENT);
+    loopback.session.peer = fm::Endpoint{fm::LOOPBACK_IP_ADDRESS, 0};
+
+    const auto result = videoSender.sendParity(30, loopback.session);
+    CHECK(result.packetsSent == 0);
+    CHECK(result.bytesSent == 0);
+    CHECK(loopback.session.nextSeq == firstSeq + fragments);
 }

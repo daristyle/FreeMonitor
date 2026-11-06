@@ -9,5 +9,6 @@ namespace fm {
         Endpoint peer;
         std::uint32_t sessionId = 0;
         std::uint32_t nextSeq = 0;
+        std::uint8_t features = 0;
     };
 }

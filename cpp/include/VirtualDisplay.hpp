@@ -36,6 +36,7 @@ namespace fm {
 
         virtual Result<CaptureTarget> create(const DisplayMode& mode) = 0;
         virtual void destroy() = 0;
+        virtual bool stillExists() const = 0;
     };
 
     std::unique_ptr<VirtualDisplay> createVirtualDisplay();

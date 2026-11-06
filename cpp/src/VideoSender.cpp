@@ -1,5 +1,6 @@
 #include "VideoSender.hpp"
 
+#include "ReedSolomon.hpp"
 #include "Timestamp.hpp"
 
 #include <span>
@@ -32,6 +33,27 @@ namespace fm {
             if (sendStatus != SendStatus::SENT) {
                 result.status = sendStatus == SendStatus::WOULD_BLOCK ? FrameSendStatus::WOULD_BLOCK
                                                                       : FrameSendStatus::SEND_FAILED;
+                return result;
+            }
+            ++session.nextSeq;
+            ++result.packetsSent;
+            result.bytesSent += packetSize;
+        }
+        return result;
+    }
+
+    ParitySendResult VideoSender::sendParity(std::uint8_t percent, Session& session) noexcept {
+        ParitySendResult result;
+        if ((session.features & FeatureFlags::FEC) == 0) {
+            return result;
+        }
+        const std::uint16_t parityCount = fecParityCount(fragmenter.fragmentCount(), percent);
+        for (std::uint16_t parityIndex = 0; parityIndex < parityCount; ++parityIndex) {
+            const std::size_t packetSize =
+                    fragmenter.writeParity(parityIndex, parityCount, session.sessionId, session.nextSeq,
+                                           toTimestampUs(std::chrono::steady_clock::now()), packetBuffer);
+            if (packetSize == 0 || udpSocket.sendTo(std::span<const std::uint8_t>(packetBuffer).first(packetSize),
+                                                    session.peer) != SendStatus::SENT) {
                 return result;
             }
             ++session.nextSeq;

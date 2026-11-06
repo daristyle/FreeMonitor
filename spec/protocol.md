@@ -49,6 +49,7 @@ The one exception to dropping silently: the host answers a `HELLO` whose `versio
 |------|------:|---------|
 | `MAX_PACKET_SIZE` | 1400 | Largest UDP payload of a packet. |
 | `MAX_FRAGMENT_PAYLOAD` | `MAX_PACKET_SIZE` − 48 = 1352 | Frame data per `VIDEO_FRAGMENT` ([4.2](#42-fragment-size)). |
+| `MAX_PARITY_PAYLOAD` | `MAX_PACKET_SIZE` − 48 = 1352 | Parity data per `VIDEO_PARITY` ([7.3](#73-forward-error-correction)). |
 | `MAX_SHAPE_PAYLOAD` | `MAX_PACKET_SIZE` − 40 = 1360 | Pixel data per `CURSOR_SHAPE` ([5.2](#52-cursor_shape)). |
 | `MAX_FRAME_SIZE` | 4,194,304 (4 MiB) | Largest video frame ([4.2](#42-fragment-size)). |
 | `HOST_PORT` | 50500 | Default UDP port of the host. |
@@ -79,6 +80,8 @@ Counts:
 | `MAX_INCOMPLETE_FRAMES` | 4 | Incomplete frames a receiver should keep at most ([4.5](#45-reassembly)). |
 | `MIN_SHAPE_CACHE_SIZE` | 16 | Cursor shapes a receiver should cache at least ([5.2](#52-cursor_shape)). |
 | `BYE_REPEAT_COUNT` | 3 | How many times `BYE` is sent ([6.3](#63-session)). |
+| `MAX_FEC_GROUP_SIZE` | 32 | Most fragments in one parity group ([7.3](#73-forward-error-correction)). |
+| `MAX_FEC_GROUP_PARITY` | 16 | Most parity packets for one parity group ([7.3](#73-forward-error-correction)). |
 
 ## 2. Common header
 
@@ -119,6 +122,7 @@ Informative Python `struct` format: `"!HBBIIIQ"`. The packet schema is the autho
 | Value  | Name               | Section |
 |--------|--------------------|---------|
 | `0x01` | `VIDEO_FRAGMENT`   | [4](#4-video-fragments) |
+| `0x02` | `VIDEO_PARITY`     | [7.3](#73-forward-error-correction) |
 | `0x10` | `CURSOR_POS`       | [5.1](#51-cursor_pos) |
 | `0x11` | `CURSOR_SHAPE`     | [5.2](#52-cursor_shape) |
 | `0x20` | `HELLO`            | [6.4](#64-messages) |
@@ -191,6 +195,7 @@ On top of the checks in [1.4](#14-invalid-packets), a receiver drops a `VIDEO_FR
 - If all `MAX_INCOMPLETE_FRAMES` are in use when a fragment of a newer frame arrives, the oldest incomplete frame is discarded to make room. A fragment of a frame older than all of them is dropped.
 - An incomplete frame is discarded when no new fragment of it has arrived for `FRAGMENT_TIMEOUT_MS`. A duplicate fragment does not count as new. The timeout measures progress, not age: a large frame that is still arriving is never discarded, however long it takes, while a frame that lost a fragment is discarded soon after its last fragment arrived.
 - A lost H.264 frame breaks the frames that reference it. The receiver recovers by requesting a keyframe ([6.4](#64-messages)).
+- With the `FEC` feature, a frame can also be completed from `VIDEO_PARITY` packets ([7.3](#73-forward-error-correction)).
 
 ## 5. Cursor packets
 
@@ -447,11 +452,57 @@ The `features` byte at offset 39 of `HELLO` and `WELCOME` lets a host and a tabl
 | Bit | Feature | Status |
 |----:|---------|--------|
 | 0   | `CURSOR_OVERLAY`: the cursor is sent as separate cursor packets instead of being drawn into the video ([5](#5-cursor-packets)) | Assigned in version 1 |
-| 1   | Forward error correction ([7.3](#73-forward-error-correction)) | Planned |
+| 1   | `FEC`: frames are protected by `VIDEO_PARITY` packets ([7.3](#73-forward-error-correction)) | Assigned in version 1 |
 
 ### 7.3 Forward error correction
 
-Planned packet type `0x02` `VIDEO_PARITY`. It carries the XOR of a group of consecutive fragments of one frame, padded to `MAX_FRAGMENT_PAYLOAD` bytes, so the receiver can rebuild one lost fragment per group. Its exact layout will be specified with the feature. The video fragment format in [4](#4-video-fragments) does not change.
+With the `FEC` feature, the sender adds `VIDEO_PARITY` packets to each frame, so the receiver can rebuild lost fragments without a resend or a keyframe. Video fragments ([4](#4-video-fragments)) do not change. Development mode ([6.6](#66-development-mode)) sends no parity, because nothing negotiates the feature.
+
+**`VIDEO_PARITY` (0x02)**: host → tablet. It carries a frame's details, so it can start a frame even when the frame's first fragments were lost.
+
+| Offset | Field                | Type | Description |
+|-------:|----------------------|------|-------------|
+| 24     | `frameId`            | u32  | Frame this parity belongs to. |
+| 28     | `parityIndex`        | u16  | Index of this parity packet, from `0` to `parityCount − 1`. |
+| 30     | `fragCount`          | u16  | The frame's `fragCount` ([4.1](#41-fragment-header)). |
+| 32     | `frameSize`          | u32  | The frame's `frameSize`. |
+| 36     | `codec`              | u8   | The frame's `codec`. |
+| 37     | `flags`              | u8   | The frame's `flags`. |
+| 38     | `parityCount`        | u16  | Number of parity packets of this frame, at least `1`. |
+| 40     | `captureTimestampUs` | u64  | The frame's `captureTimestampUs`. |
+| 48     | payload              | —    | One parity block of exactly `blockSize` bytes. |
+
+**Groups.** `groupCount` = ceil(`fragCount` / `MAX_FEC_GROUP_SIZE`). Fragment `i` is in group `i mod groupCount`, at column `i div groupCount`. Parity packet `p` is in group `p mod groupCount`, at row `p div groupCount`. Spreading neighbouring fragments over different groups means a burst of lost packets costs each group only a few.
+
+**Blocks.** `blockSize` = min(`frameSize`, `MAX_FRAGMENT_PAYLOAD`). Each fragment's data is one block. The frame's last fragment is padded with zero bytes up to `blockSize`, and the padding is never sent.
+
+**Parity.** Arithmetic is in the finite field GF(2^8) with the polynomial x^8 + x^4 + x^3 + x^2 + 1 (`0x11D`). Addition is XOR. For a parity packet at row `r` of a group, byte `t` of its block is the sum over the group's columns `c` of:
+
+```
+coefficient(r, c) × block[c][t]
+
+coefficient(r, c) = 1 / ((MAX_FEC_GROUP_SIZE + r) XOR c)
+```
+
+This is a Reed-Solomon code built from a Cauchy matrix. Every square part of that matrix can be inverted, so a group of `k` fragments can be rebuilt from any `k` of its fragments and parity packets.
+
+Examples: `0x02 × 0x80` = `0x1D`, `coefficient(0, 0)` = `0x6C`, `coefficient(0, 1)` = `0xED`, `coefficient(15, 31)` = `0x48`. For a frame of the three bytes `01 02 03`, row 0 is `6C D8 B4` and row 1 is `ED C7 2A`.
+
+**Sender.** It sends a frame's parity packets after the frame's last fragment, so a frame that arrives whole never waits for them. It chooses `parityCount`, from `1` to `groupCount × MAX_FEC_GROUP_PARITY`, and may change it from frame to frame. A group may have no parity.
+
+**Validation.** On top of the checks in [1.4](#14-invalid-packets), a receiver drops a `VIDEO_PARITY` packet when any of these is true:
+
+- `fragCount`, `frameSize`, `codec` or `flags` break the rules of [4.4](#44-validation).
+- `parityCount` is `0` or larger than `groupCount × MAX_FEC_GROUP_PARITY`, or `parityIndex ≥ parityCount`.
+- The payload length is not `blockSize`.
+- It disagrees with an earlier fragment or parity packet of the same `frameId` on `fragCount`, `frameSize`, `codec`, `flags` or `captureTimestampUs`, or with an earlier parity packet on `parityCount`.
+
+**Receiver.**
+
+- Reassembly follows [4.5](#45-reassembly). A new parity packet counts as a new fragment for `FRAGMENT_TIMEOUT_MS`, and a duplicate does not.
+- When a group has `k` fragments and parity packets in total, the receiver rebuilds the group's missing fragments. The frame is complete when every fragment has arrived or been rebuilt.
+- A parity packet for a frame that was already delivered, or for an older one, is dropped. This is normal: on a clean network, every parity packet arrives after its frame is complete.
+- Because a frame is never larger than `MAX_FRAME_SIZE`, the parity of one frame is at most 97 groups × `MAX_FEC_GROUP_PARITY` × `MAX_PARITY_PAYLOAD` = 2,098,304 bytes, so a receiver can preallocate it.
 
 ### 7.4 Encryption
 

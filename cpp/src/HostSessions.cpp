@@ -92,6 +92,7 @@ namespace fm {
                                    .fps = offer.fps,
                                    .codec = (commonCodecs & CodecFlags::H264) != 0 ? Codec::H264 : Codec::JPEG,
                                    .features = static_cast<std::uint8_t>(offer.features & hello.features)};
+        client.session.features = client.stream.features;
         client.nextHeartbeatTime = now + HEARTBEAT_INTERVAL;
 
         sendAck(client, hello.controlHeader.msgId, now);

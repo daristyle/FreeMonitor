@@ -19,6 +19,10 @@ namespace fm {
         Result<CaptureTarget> create(const DisplayMode& mode) override;
         void destroy() override;
 
+        bool stillExists() const override {
+            return created;
+        }
+
         bool exists() const {
             return created;
         }

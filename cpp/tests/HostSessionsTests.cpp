@@ -6,12 +6,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 namespace {
     constexpr std::uint32_t TABLET_SESSION = 7;
     constexpr std::uint32_t OTHER_SESSION = 9;
+    constexpr std::uint8_t NO_FEATURES = 0;
     constexpr fm::HostOffer OFFER{.width = 2944, .height = 1840, .fps = 60, .codecs = BOTH_CODECS, .features = 0};
 
     struct HostFixture {
@@ -57,6 +59,24 @@ TEST_CASE("a HELLO is acknowledged and answered with a WELCOME for the best comm
     CHECK(welcomeSent.header().seq == ackSent.header().seq + 1);
     CHECK(host.listener.started == std::vector<std::uint32_t>{TABLET_SESSION});
     CHECK(host.sessions.streamingSession() == nullptr);
+}
+
+TEST_CASE("a session only gets the features both sides have") {
+    const auto [offered, asked, expected] =
+            GENERATE(std::tuple{fm::FeatureFlags::FEC, fm::FeatureFlags::FEC, fm::FeatureFlags::FEC},
+                     std::tuple{fm::FeatureFlags::FEC, NO_FEATURES, NO_FEATURES},
+                     std::tuple{NO_FEATURES, fm::FeatureFlags::FEC, NO_FEATURES});
+    fm::HostOffer offer = OFFER;
+    offer.features = offered;
+    HostFixture host(offer);
+
+    host.sessions.handlePacket(helloPacket(TABLET_SESSION, 100, 1, 2944, 1840, BOTH_CODECS, asked), TABLET_ADDRESS,
+                               START);
+    host.sessions.handlePacket(ackPacket(TABLET_SESSION, 101, 1), TABLET_ADDRESS, START);
+
+    const fm::Session* session = host.sessions.streamingSession();
+    REQUIRE(session != nullptr);
+    CHECK(session->features == expected);
 }
 
 TEST_CASE("the WELCOME is resent every 100 ms with the same msgId and a new seq until it is acknowledged") {

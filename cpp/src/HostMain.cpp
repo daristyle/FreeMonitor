@@ -108,20 +108,22 @@ namespace {
             std::println(stderr,
                          "                       [--position right|left|above|below|X,Y] [--destination IPv4:PORT]");
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
-            std::println(stderr, "                       [--timing-log FILE]");
+            std::println(stderr, "                       [--fec PERCENT] [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams video in development mode.");
             std::println(stderr, "  Without --destination, the host waits for a tablet on UDP port {}.", fm::HOST_PORT);
         } else {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
             std::println(stderr, "                       [--position right|left|above|below|X,Y]");
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
-            std::println(stderr, "                       [--timing-log FILE]");
+            std::println(stderr, "                       [--fec PERCENT] [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. The host waits for a tablet on UDP port {}.",
                          fm::HOST_PORT);
         }
         std::println(stderr, "  --encoder auto tries NVENC, then VA-API, then JPEG. It is the default.");
         std::println(stderr,
                      "  --bitrate sets the H.264 bitrate in Mbit/s (default 20). --quality sets the JPEG quality.");
+        std::println(stderr, "  --fec sets the parity per frame in percent (default {}). 0 turns it off.",
+                     fm::DEFAULT_FEC_PERCENT);
         std::println(stderr, "  --timing-log writes one CSV line of stage timestamps per frame.");
     }
 
@@ -215,7 +217,7 @@ namespace {
         return {};
     }
 
-    fm::HostOffer offerFor(const EncoderSlot& slot) {
+    fm::HostOffer offerFor(const EncoderSlot& slot, std::uint8_t fecPercent) {
         fm::HostOffer offer;
         offer.width = static_cast<std::uint16_t>(slot.config.width & ~1U);
         offer.height = static_cast<std::uint16_t>(slot.config.height & ~1U);
@@ -223,6 +225,7 @@ namespace {
         offer.codecs = slot.encoder->codec() == fm::Codec::H264
                                ? static_cast<std::uint8_t>(fm::CodecFlags::JPEG | fm::CodecFlags::H264)
                                : fm::CodecFlags::JPEG;
+        offer.features = fecPercent > 0 ? fm::FeatureFlags::FEC : std::uint8_t{0};
         return offer;
     }
 
@@ -444,6 +447,12 @@ int main(int argumentCount, char** arguments) {
                     timingLog->record(*report->clockSample);
                 }
             }
+            if (periodFrames == 0 && !virtualDisplay->stillExists()) {
+                std::println(stderr, "The virtual monitor {} is gone, so the host is stopping.",
+                             captureTarget->outputName);
+                exitCode = 1;
+                break;
+            }
             periodStart = now;
             periodFrames = 0;
             periodRepeats = 0;
@@ -502,7 +511,7 @@ int main(int argumentCount, char** arguments) {
                     break;
                 }
                 if (sessions) {
-                    sessions->setOffer(offerFor(mainEncoder));
+                    sessions->setOffer(offerFor(mainEncoder, options->fecPercent));
                     const auto codec = mainEncoder.encoder->codec();
                     if (previousCodec && codec != previousCodec && activeEncoder == &mainEncoder &&
                         sessions->streamingSession() != nullptr) {
@@ -560,6 +569,9 @@ int main(int argumentCount, char** arguments) {
                 timing.sendStartUs = fm::toTimestampUs(sendStart);
                 timing.sendEndUs = fm::toTimestampUs(sendEnd);
                 if (sendResult.status == fm::FrameSendStatus::FRAME_SENT) {
+                    const auto paritySent = videoSender.sendParity(options->fecPercent, *target);
+                    periodPackets += paritySent.packetsSent;
+                    periodBytes += paritySent.bytesSent;
                     timing.outcome = fm::FrameOutcome::SENT;
                     if (encodedFrame.keyframe) {
                         keyframeOwed = false;

@@ -26,6 +26,11 @@ namespace fm {
         std::size_t bytesSent = 0;
     };
 
+    struct ParitySendResult {
+        std::uint16_t packetsSent = 0;
+        std::size_t bytesSent = 0;
+    };
+
     class VideoSender {
     private:
         UDPSocket& udpSocket;
@@ -40,5 +45,6 @@ namespace fm {
         VideoSender& operator=(const VideoSender&) = delete;
 
         FrameSendResult send(const EncodedFrame& frame, Codec codec, Session& session) noexcept;
+        ParitySendResult sendParity(std::uint8_t percent, Session& session) noexcept;
     };
 }

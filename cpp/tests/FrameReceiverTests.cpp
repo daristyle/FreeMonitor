@@ -85,6 +85,8 @@ namespace {
     }
 
     constexpr fm::HostOffer OFFER{.width = 2944, .height = 1840, .fps = 60, .codecs = BOTH_CODECS, .features = 0};
+    constexpr fm::HostOffer FEC_OFFER{
+            .width = 2944, .height = 1840, .fps = 60, .codecs = BOTH_CODECS, .features = fm::FeatureFlags::FEC};
     constexpr std::uint32_t FIRST_FRAME_ID = 1000;
 
     std::unique_ptr<fm::FrameReceiver> openSessionReceiver(const fm::TabletSettings& settings) {
@@ -159,6 +161,26 @@ namespace {
                     fm::FrameSendStatus::FRAME_SENT);
             if (keyframe) {
                 sessions.keyframeSent(std::chrono::steady_clock::now());
+            }
+        }
+
+        void sendFrameLosingFragment(std::uint32_t frameId, const std::vector<std::uint8_t>& data,
+                                     std::uint16_t lostFragment, std::uint16_t parityCount) {
+            fm::Session* session = sessions.streamingSession();
+            REQUIRE(session != nullptr);
+            fm::Fragmenter fragmenter;
+            REQUIRE(fragmenter.begin(data, frameId, fm::Codec::H264, false, 1));
+            std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
+            for (std::uint16_t index = 0; index < fragmenter.fragmentCount(); ++index) {
+                if (index != lostFragment) {
+                    const std::size_t size = fragmenter.write(index, session->sessionId, session->nextSeq++, 1, packet);
+                    REQUIRE(udpSocket.sendTo(std::span(packet).first(size), session->peer) == fm::SendStatus::SENT);
+                }
+            }
+            for (std::uint16_t index = 0; index < parityCount; ++index) {
+                const std::size_t size =
+                        fragmenter.writeParity(index, parityCount, session->sessionId, session->nextSeq++, 1, packet);
+                REQUIRE(udpSocket.sendTo(std::span(packet).first(size), session->peer) == fm::SendStatus::SENT);
             }
         }
 
@@ -465,4 +487,77 @@ TEST_CASE("a session receiver ignores video of another session") {
     receiveFrame(*receiver, host, data);
     CHECK(receiver->statistics().ignoredPackets >= 2);
     CHECK(receiver->statistics().framesCompleted == 1);
+}
+
+TEST_CASE("a session receiver with FEC rebuilds a frame that lost a fragment") {
+    TestHost host(FEC_OFFER);
+    fm::TabletSettings settings = host.settings();
+    settings.features = fm::FeatureFlags::FEC;
+    auto receiver = openSessionReceiver(settings);
+    receiver->start();
+    host.connect(*receiver);
+    CHECK(receiver->sessionStatus().stream.features == fm::FeatureFlags::FEC);
+
+    const auto data = makeFrameData(3 * fm::MAX_FRAGMENT_PAYLOAD + 5, 9);
+    host.sendFrameLosingFragment(FIRST_FRAME_ID, data, 1, 2);
+    receiveFrame(*receiver, host, data);
+
+    const auto statistics = receiver->statistics();
+    CHECK(statistics.framesCompleted == 1);
+    CHECK(statistics.framesRepaired == 1);
+    CHECK(statistics.framesDropped == 0);
+    CHECK(statistics.invalidPackets == 0);
+}
+
+TEST_CASE("the parity of a whole frame arrives late and does no harm") {
+    TestHost host(FEC_OFFER);
+    fm::TabletSettings settings = host.settings();
+    settings.features = fm::FeatureFlags::FEC;
+    auto receiver = openSessionReceiver(settings);
+    receiver->start();
+    host.connect(*receiver);
+
+    const auto data = makeFrameData(3 * fm::MAX_FRAGMENT_PAYLOAD + 5, 9);
+    host.sendFrame(data, true, fm::Codec::H264);
+    REQUIRE(host.videoSender.sendParity(30, *host.sessions.streamingSession()).packetsSent == 2);
+    receiveFrame(*receiver, host, data);
+    host.pumpFor(50ms);
+
+    const auto statistics = receiver->statistics();
+    CHECK(statistics.framesCompleted == 1);
+    CHECK(statistics.framesRepaired == 0);
+    CHECK(statistics.framesDropped == 0);
+    CHECK(statistics.invalidPackets == 0);
+    CHECK(statistics.senderRestarts == 0);
+}
+
+TEST_CASE("a session without FEC ignores parity") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+
+    const auto data = makeFrameData(3 * fm::MAX_FRAGMENT_PAYLOAD + 5, 9);
+    host.sendFrameLosingFragment(FIRST_FRAME_ID, data, 1, 2);
+    REQUIRE(host.pumpUntil([&] { return receiver->statistics().ignoredPackets == 2; }));
+
+    const auto statistics = receiver->statistics();
+    CHECK(statistics.framesCompleted == 0);
+    CHECK(statistics.framesRepaired == 0);
+}
+
+TEST_CASE("parity in development mode is ignored") {
+    auto receiver = openReceiver();
+    receiver->start();
+    Sender sender(endpointOf(*receiver), 5);
+    const auto data = makeFrameData(fm::MAX_FRAGMENT_PAYLOAD, 3);
+    fm::Fragmenter fragmenter;
+    REQUIRE(fragmenter.begin(data, 5, fm::Codec::JPEG, true, 1));
+    std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
+    const std::size_t size = fragmenter.writeParity(0, 2, 0, 1, 1, packet);
+    REQUIRE(size != 0);
+    REQUIRE(sender.udpSocket.sendTo(std::span(packet).first(size), endpointOf(*receiver)) == fm::SendStatus::SENT);
+
+    REQUIRE(waitUntil([&] { return receiver->statistics().ignoredPackets == 1; }));
+    CHECK(receiver->statistics().framesCompleted == 0);
 }

@@ -25,12 +25,16 @@ DEVELOPMENT_KEYFRAME_INTERVAL_MS = 1000
 MAX_INCOMPLETE_FRAMES = 4
 MIN_SHAPE_CACHE_SIZE = 16
 BYE_REPEAT_COUNT = 3
+MAX_FEC_GROUP_SIZE = 32
+MAX_FEC_GROUP_PARITY = 16
 MAX_FRAGMENT_PAYLOAD = 1352
+MAX_PARITY_PAYLOAD = 1352
 MAX_SHAPE_PAYLOAD = 1360
 
 
 class PacketType(IntEnum):
     VIDEO_FRAGMENT = 0x01
+    VIDEO_PARITY = 0x02
     CURSOR_POS = 0x10
     CURSOR_SHAPE = 0x11
     HELLO = 0x20
@@ -70,6 +74,7 @@ class CodecFlags(IntFlag):
 
 class FeatureFlags(IntFlag):
     CURSOR_OVERLAY = 0x01
+    FEC = 0x02
 
 
 @dataclass
@@ -149,6 +154,54 @@ class VideoFragment:
     def unpack(cls, data: bytes) -> VideoFragment:
         if len(data) < cls.SIZE:
             raise ValueError(f"VideoFragment needs {cls.SIZE} bytes, got {len(data)}")
+        values = cls.FORMAT.unpack_from(data)
+        return cls(
+            CommonHeader(*values[0:7]),
+            *values[7:],
+            payload=bytes(data[cls.SIZE :]),
+        )
+
+
+@dataclass
+class VideoParity:
+    SIZE: ClassVar[int] = 48
+    FORMAT: ClassVar[struct.Struct] = struct.Struct("!HBBIIIQIHHIBBHQ")
+
+    commonHeader: CommonHeader = field(default_factory=lambda: CommonHeader(type=PacketType.VIDEO_PARITY))
+    frameId: int = 0
+    parityIndex: int = 0
+    fragCount: int = 0
+    frameSize: int = 0
+    codec: int = 0
+    flags: int = 0
+    parityCount: int = 0
+    captureTimestampUs: int = 0
+    payload: bytes = b""
+
+    def pack(self) -> bytes:
+        packed = self.FORMAT.pack(
+            self.commonHeader.magic,
+            self.commonHeader.version,
+            self.commonHeader.type,
+            self.commonHeader.sessionId,
+            self.commonHeader.seq,
+            self.commonHeader.headerReserved,
+            self.commonHeader.timestampUs,
+            self.frameId,
+            self.parityIndex,
+            self.fragCount,
+            self.frameSize,
+            self.codec,
+            self.flags,
+            self.parityCount,
+            self.captureTimestampUs,
+        )
+        return packed + self.payload
+
+    @classmethod
+    def unpack(cls, data: bytes) -> VideoParity:
+        if len(data) < cls.SIZE:
+            raise ValueError(f"VideoParity needs {cls.SIZE} bytes, got {len(data)}")
         values = cls.FORMAT.unpack_from(data)
         return cls(
             CommonHeader(*values[0:7]),

@@ -20,7 +20,7 @@ namespace fm {
         constexpr std::uint32_t DEVELOPMENT_SESSION_ID = 0;
         constexpr jint MAX_PORT = 65535;
         constexpr jint MAX_SCREEN_VALUE = 65535;
-        constexpr jsize STATISTICS_COUNT = 7;
+        constexpr jsize STATISTICS_COUNT = 8;
         constexpr jsize FRAME_INFO_COUNT = 7;
         constexpr jsize SESSION_STATUS_COUNT = 9;
         constexpr jlong UNKNOWN_ROUND_TRIP = -1;
@@ -88,7 +88,8 @@ namespace fm {
             const TabletSettings settings{.host = *endpoint,
                                           .width = static_cast<std::uint16_t>(width),
                                           .height = static_cast<std::uint16_t>(height),
-                                          .refreshHz = static_cast<std::uint16_t>(refreshHz)};
+                                          .refreshHz = static_cast<std::uint16_t>(refreshHz),
+                                          .features = FeatureFlags::FEC};
             auto receiver = FrameReceiver::openSession(settings);
             if (!receiver) {
                 throwIllegalState(environment, receiver.error().message);
@@ -139,7 +140,7 @@ namespace fm {
                     static_cast<jlong>(statistics.packets),        static_cast<jlong>(statistics.invalidPackets),
                     static_cast<jlong>(statistics.ignoredPackets), static_cast<jlong>(statistics.framesCompleted),
                     static_cast<jlong>(statistics.framesDropped),  static_cast<jlong>(statistics.framesReplaced),
-                    static_cast<jlong>(statistics.senderRestarts),
+                    static_cast<jlong>(statistics.senderRestarts), static_cast<jlong>(statistics.framesRepaired),
             };
             jlongArray array = environment->NewLongArray(STATISTICS_COUNT);
             if (array != nullptr) {

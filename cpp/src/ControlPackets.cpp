@@ -28,6 +28,7 @@ namespace fm {
                 case PacketType::REJECT:
                     return Reject::SIZE;
                 case PacketType::VIDEO_FRAGMENT:
+                case PacketType::VIDEO_PARITY:
                 case PacketType::CURSOR_POS:
                 case PacketType::CURSOR_SHAPE:
                     break;
@@ -85,6 +86,7 @@ namespace fm {
 
     bool isMediaPacket(const CommonHeader& header) noexcept {
         const bool mediaType = header.type == static_cast<std::uint8_t>(PacketType::VIDEO_FRAGMENT) ||
+                               header.type == static_cast<std::uint8_t>(PacketType::VIDEO_PARITY) ||
                                header.type == static_cast<std::uint8_t>(PacketType::CURSOR_POS) ||
                                header.type == static_cast<std::uint8_t>(PacketType::CURSOR_SHAPE);
         return mediaType && header.magic == MAGIC && header.version == PROTOCOL_VERSION && header.headerReserved == 0;

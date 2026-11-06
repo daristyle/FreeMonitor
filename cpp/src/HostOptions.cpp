@@ -13,6 +13,7 @@ namespace fm {
     namespace {
         constexpr std::uint32_t MAX_JPEG_QUALITY = 100;
         constexpr std::uint32_t KILOBITS_PER_MEGABIT = 1000;
+        constexpr std::uint32_t MAX_FEC_PERCENT = 100;
         constexpr std::array<std::pair<std::string_view, DisplayPlacement>, 4> NAMED_PLACEMENTS{{
                 {"right", DisplayPlacement::RIGHT},
                 {"left", DisplayPlacement::LEFT},
@@ -101,7 +102,7 @@ namespace fm {
             const std::string_view option = arguments[i];
             if (option != "--seconds" && option != "--quality" && option != "--destination" && option != "--size" &&
                 option != "--refresh" && option != "--position" && option != "--timing-log" && option != "--encoder" &&
-                option != "--bitrate") {
+                option != "--bitrate" && option != "--fec") {
                 return invalidOption("Unknown option " + std::string(option));
             }
             if (i + 1 >= arguments.size()) {
@@ -152,6 +153,12 @@ namespace fm {
                     return invalidOption("--bitrate must be 1 to 500 Mbit/s");
                 }
                 options.bitrateKbps = *bitrate * KILOBITS_PER_MEGABIT;
+            } else if (option == "--fec") {
+                const auto percent = parseNumber(value, MAX_FEC_PERCENT);
+                if (!percent) {
+                    return invalidOption("--fec must be 0 to 100 percent");
+                }
+                options.fecPercent = static_cast<std::uint8_t>(*percent);
             } else {
                 if (!developmentModeAllowed) {
                     return invalidOption("--destination is development mode, which a release build does not have");

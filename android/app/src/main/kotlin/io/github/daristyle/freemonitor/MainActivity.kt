@@ -223,6 +223,7 @@ class MainActivity :
                 status.framesPerSecond,
                 status.codec?.label ?: getString(R.string.no_codec),
                 status.statistics.framesDropped,
+                status.statistics.framesRepaired,
                 status.statistics.framesReplaced,
                 status.statistics.invalidPackets,
                 status.framesWaitingForKeyframe,

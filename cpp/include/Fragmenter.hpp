@@ -18,5 +18,8 @@ namespace fm {
         std::uint16_t fragmentCount() const noexcept;
         std::size_t write(std::uint16_t fragIndex, std::uint32_t sessionId, std::uint32_t seq,
                           std::uint64_t timestampUs, std::span<std::uint8_t> packetBuffer) const noexcept;
+        std::size_t writeParity(std::uint16_t parityIndex, std::uint16_t parityCount, std::uint32_t sessionId,
+                                std::uint32_t seq, std::uint64_t timestampUs,
+                                std::span<std::uint8_t> packetBuffer) const noexcept;
     };
 }

@@ -45,6 +45,7 @@ target_sources(fm_protocol PRIVATE
         cpp/src/HostSessions.cpp
         cpp/src/PeerTracker.cpp
         cpp/src/Reassembler.cpp
+        cpp/src/ReedSolomon.cpp
         cpp/src/ReliableDelivery.cpp
         cpp/src/TabletSession.cpp
         cpp/src/UDPControlTransport.cpp
@@ -153,6 +154,7 @@ if(FM_BUILD_TESTS)
             cpp/tests/UDPControlTransportTests.cpp
             cpp/tests/EndpointParsingTests.cpp
             cpp/tests/HeartbeatEchoTests.cpp
+            cpp/tests/ReedSolomonTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE

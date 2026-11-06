@@ -1,10 +1,12 @@
 #pragma once
 
 #include "Packets.hpp"
+#include "ReedSolomon.hpp"
 
 #include <array>
 #include <bitset>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -12,6 +14,7 @@
 
 namespace fm {
     constexpr std::uint32_t MAX_FRAGMENT_COUNT = (MAX_FRAME_SIZE + MAX_FRAGMENT_PAYLOAD - 1) / MAX_FRAGMENT_PAYLOAD;
+    constexpr std::uint32_t MAX_PARITY_COUNT = std::uint32_t{fecGroupCount(MAX_FRAGMENT_COUNT)} * MAX_FEC_GROUP_PARITY;
 
     constexpr std::optional<Codec> toCodec(std::uint8_t value) noexcept {
         switch (value) {
@@ -37,6 +40,7 @@ namespace fm {
         std::uint32_t frameId = 0;
         Codec codec = Codec::JPEG;
         bool keyframe = false;
+        bool repaired = false;
         std::uint64_t captureTimestampUs = 0;
         std::chrono::steady_clock::time_point firstFragmentTime;
         std::chrono::steady_clock::time_point completeTime;
@@ -44,9 +48,20 @@ namespace fm {
 
     class Reassembler {
     private:
+        struct FrameDetails {
+            std::uint64_t captureTimestampUs = 0;
+            std::uint32_t frameId = 0;
+            std::uint32_t frameSize = 0;
+            std::uint16_t fragCount = 0;
+            std::uint8_t codec = 0;
+            std::uint8_t flags = 0;
+        };
+
         struct Slot {
             std::vector<std::uint8_t> data;
+            std::vector<std::uint8_t> parity;
             std::bitset<MAX_FRAGMENT_COUNT> received;
+            std::bitset<MAX_PARITY_COUNT> parityReceived;
             std::chrono::steady_clock::time_point firstFragmentTime;
             std::chrono::steady_clock::time_point lastProgress;
             std::uint64_t captureTimestampUs = 0;
@@ -54,8 +69,10 @@ namespace fm {
             std::uint32_t frameSize = 0;
             std::uint16_t fragCount = 0;
             std::uint16_t receivedCount = 0;
+            std::uint16_t parityCount = 0;
             Codec codec = Codec::JPEG;
             std::uint8_t flags = 0;
+            bool repaired = false;
             bool inUse = false;
         };
 
@@ -65,11 +82,16 @@ namespace fm {
         std::uint32_t completedCount = 0;
         std::uint32_t droppedCount = 0;
 
-        static bool matches(const Slot& slot, const VideoFragment& fragment) noexcept;
-        static void start(Slot& slot, const VideoFragment& fragment,
-                          std::chrono::steady_clock::time_point now) noexcept;
+        static FrameDetails detailsOf(const VideoFragment& fragment) noexcept;
+        static FrameDetails detailsOf(const VideoParity& parity) noexcept;
+        static bool matches(const Slot& slot, const FrameDetails& details) noexcept;
+        static void start(Slot& slot, const FrameDetails& details, std::chrono::steady_clock::time_point now) noexcept;
+        static void repairGroup(Slot& slot, std::size_t group) noexcept;
         Slot* findSlot(std::uint32_t frameId) noexcept;
         Slot* claimSlot(std::uint32_t frameId) noexcept;
+        Slot* slotFor(const FrameDetails& details, std::chrono::steady_clock::time_point now,
+                      FragmentStatus& refusal) noexcept;
+        FragmentStatus packetStored(Slot& slot, std::size_t group, std::chrono::steady_clock::time_point now) noexcept;
         void discard(Slot& slot) noexcept;
         void deliver(Slot& slot, std::chrono::steady_clock::time_point now) noexcept;
 
@@ -80,6 +102,7 @@ namespace fm {
         Reassembler& operator=(const Reassembler&) = delete;
 
         FragmentStatus accept(const VideoFragment& fragment, std::chrono::steady_clock::time_point now) noexcept;
+        FragmentStatus accept(const VideoParity& parity, std::chrono::steady_clock::time_point now) noexcept;
         void expire(std::chrono::steady_clock::time_point now) noexcept;
         void reset() noexcept;
         ReassembledFrame completedFrame() const noexcept;

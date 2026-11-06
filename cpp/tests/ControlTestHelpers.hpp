@@ -92,13 +92,14 @@ inline std::function<std::uint32_t()> counterFrom(std::uint32_t first) {
 
 inline std::vector<std::uint8_t> helloPacket(std::uint32_t sessionId, std::uint32_t seq, std::uint32_t msgId,
                                              std::uint16_t width = 2944, std::uint16_t height = 1840,
-                                             std::uint8_t codecs = BOTH_CODECS) {
+                                             std::uint8_t codecs = BOTH_CODECS, std::uint8_t features = 0) {
     fm::Hello hello;
     hello.controlHeader.msgId = msgId;
     hello.width = width;
     hello.height = height;
     hello.refreshHz = 60;
     hello.codecs = codecs;
+    hello.features = features;
     std::vector<std::uint8_t> bytes(fm::Hello::SIZE);
     fm::writeControlPacket(hello, sessionId, seq, 1, bytes);
     return bytes;

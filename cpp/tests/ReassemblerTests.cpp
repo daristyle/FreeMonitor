@@ -2,14 +2,17 @@
 #include "Reassembler.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <numeric>
 #include <random>
+#include <utility>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -48,6 +51,30 @@ namespace {
             frame.fragments.push_back(fragment);
         }
         return frame;
+    }
+
+    struct TestParity {
+        std::vector<std::vector<std::uint8_t>> packets;
+        std::vector<fm::VideoParity> parity;
+    };
+
+    TestParity makeTestParity(const TestFrame& frame, std::uint32_t frameId, std::uint16_t parityCount,
+                              fm::Codec codec = fm::Codec::JPEG, bool keyframe = true,
+                              std::uint64_t captureTimestampUs = 1234) {
+        TestParity result;
+        fm::Fragmenter fragmenter;
+        fragmenter.begin(frame.data, frameId, codec, keyframe, captureTimestampUs);
+        for (std::uint16_t index = 0; index < parityCount; ++index) {
+            std::vector<std::uint8_t> packet(fm::MAX_PACKET_SIZE);
+            packet.resize(fragmenter.writeParity(index, parityCount, SESSION_ID, index, 0, packet));
+            result.packets.push_back(std::move(packet));
+        }
+        for (const std::vector<std::uint8_t>& packet : result.packets) {
+            fm::VideoParity parity;
+            parity.read(packet);
+            result.parity.push_back(parity);
+        }
+        return result;
     }
 
     std::vector<std::size_t> shuffledOrder(const TestFrame& frame) {
@@ -381,4 +408,233 @@ TEST_CASE("fragmenter to reassembler round trip at the size limits") {
         CHECK(status == Status::FRAME_COMPLETE);
         CHECK(holds(reassembler, frame));
     }
+}
+
+TEST_CASE("a lost fragment is rebuilt from a parity packet and the frame is delivered") {
+    const std::size_t lost = GENERATE(std::size_t{0}, std::size_t{1}, std::size_t{2});
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+
+    for (std::size_t index = 0; index < frame.fragments.size(); ++index) {
+        if (index != lost) {
+            REQUIRE(reassembler.accept(frame.fragments[index], START) == Status::ACCEPTED);
+        }
+    }
+    REQUIRE(reassembler.accept(parity.parity[1], START + 1ms) == Status::FRAME_COMPLETE);
+    CHECK(holds(reassembler, frame));
+    CHECK(reassembler.completedFrame().repaired);
+    CHECK(reassembler.completedFrame().completeTime == START + 1ms);
+    CHECK(reassembler.framesCompleted() == 1);
+    CHECK(reassembler.framesDropped() == 0);
+}
+
+TEST_CASE("a frame that arrives whole is not repaired and its parity is dropped as too old") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+
+    REQUIRE(feedAll(reassembler, frame, START) == Status::FRAME_COMPLETE);
+    CHECK_FALSE(reassembler.completedFrame().repaired);
+    CHECK(reassembler.accept(parity.parity[0], START) == Status::TOO_OLD);
+    CHECK(reassembler.framesCompleted() == 1);
+    CHECK(reassembler.framesDropped() == 0);
+}
+
+TEST_CASE("parity that arrives first is used once enough fragments are in") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+
+    REQUIRE(reassembler.accept(parity.parity[0], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(parity.parity[1], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(frame.fragments[1], START) == Status::FRAME_COMPLETE);
+    CHECK(holds(reassembler, frame));
+}
+
+TEST_CASE("a one-fragment frame is rebuilt from parity alone and keeps its details") {
+    constexpr std::uint64_t captureTimestampUs = 0x0102030405060708;
+    const TestFrame frame = makeTestFrame(100, 7, fm::Codec::H264, true, captureTimestampUs);
+    const TestParity parity = makeTestParity(frame, 7, 2, fm::Codec::H264, true, captureTimestampUs);
+    fm::Reassembler reassembler;
+
+    REQUIRE(reassembler.accept(parity.parity[1], START) == Status::FRAME_COMPLETE);
+    const fm::ReassembledFrame completed = reassembler.completedFrame();
+    CHECK(std::ranges::equal(completed.data, frame.data));
+    CHECK(completed.frameId == 7);
+    CHECK(completed.codec == fm::Codec::H264);
+    CHECK(completed.keyframe);
+    CHECK(completed.captureTimestampUs == captureTimestampUs);
+    CHECK(completed.repaired);
+}
+
+TEST_CASE("too little parity leaves the frame incomplete until it times out") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+
+    REQUIRE(reassembler.accept(frame.fragments[0], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(parity.parity[0], START) == Status::ACCEPTED);
+    reassembler.expire(START + 100ms);
+    CHECK(reassembler.framesCompleted() == 0);
+    CHECK(reassembler.framesDropped() == 1);
+}
+
+TEST_CASE("each group of a large frame is rebuilt from its own parity") {
+    constexpr std::size_t fragments = 40;
+    const TestFrame frame = makeTestFrame(fragments * fm::MAX_FRAGMENT_PAYLOAD - 7, 5);
+    const TestParity parity = makeTestParity(frame, 5, 4);
+    fm::Reassembler reassembler;
+
+    for (std::size_t index = 0; index < fragments; ++index) {
+        if (index != 4 && index != 5 && index != 6) {
+            REQUIRE(reassembler.accept(frame.fragments[index], START) == Status::ACCEPTED);
+        }
+    }
+    REQUIRE(reassembler.accept(parity.parity[1], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(parity.parity[0], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(parity.parity[2], START) == Status::FRAME_COMPLETE);
+    CHECK(holds(reassembler, frame));
+}
+
+TEST_CASE("a group that lost more fragments than it can have parity rows stays incomplete") {
+    constexpr std::size_t fragments = fm::MAX_FEC_GROUP_SIZE;
+    constexpr std::size_t received = fragments - fm::MAX_FEC_GROUP_PARITY - 1;
+    const TestFrame frame = makeTestFrame(fragments * fm::MAX_FRAGMENT_PAYLOAD, 5);
+    const TestParity parity = makeTestParity(frame, 5, fm::MAX_FEC_GROUP_PARITY);
+    fm::Reassembler reassembler;
+
+    for (std::size_t index = 0; index < received; ++index) {
+        REQUIRE(reassembler.accept(frame.fragments[index], START) == Status::ACCEPTED);
+    }
+    for (const fm::VideoParity& packet : parity.parity) {
+        REQUIRE(reassembler.accept(packet, START) == Status::ACCEPTED);
+    }
+    CHECK(reassembler.framesCompleted() == 0);
+}
+
+TEST_CASE("a new parity packet counts as progress and a duplicate does not") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+
+    REQUIRE(reassembler.accept(frame.fragments[0], START) == Status::ACCEPTED);
+    REQUIRE(reassembler.accept(parity.parity[0], START + 80ms) == Status::ACCEPTED);
+    CHECK(reassembler.accept(parity.parity[0], START + 170ms) == Status::DUPLICATE);
+    reassembler.expire(START + 180ms);
+    CHECK(reassembler.framesDropped() == 1);
+}
+
+TEST_CASE("parity that breaks the rules is refused") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::VideoParity bad = parity.parity[0];
+
+    SECTION("a parity count of 0") {
+        bad.parityCount = 0;
+    }
+    SECTION("an index past the count") {
+        bad.parityIndex = 2;
+    }
+    SECTION("more parity than the groups can have") {
+        bad.parityCount = fm::MAX_FEC_GROUP_PARITY + 1;
+    }
+    SECTION("a block of the wrong size") {
+        bad.payload = bad.payload.first(10);
+    }
+    SECTION("an unknown codec") {
+        bad.codec = 99;
+    }
+    SECTION("an unknown flag") {
+        bad.flags = 0x80;
+    }
+    SECTION("a fragment count that does not fit the frame size") {
+        bad.fragCount = 4;
+    }
+    SECTION("a frame that is too large") {
+        bad.frameSize = fm::MAX_FRAME_SIZE + 1;
+    }
+
+    fm::Reassembler reassembler;
+    CHECK(reassembler.accept(bad, START) == Status::INVALID);
+    CHECK(reassembler.framesDropped() == 0);
+}
+
+TEST_CASE("parity that disagrees with the frame's earlier packets is refused") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+    fm::VideoParity other = parity.parity[1];
+
+    SECTION("a fragment's details") {
+        REQUIRE(reassembler.accept(frame.fragments[0], START) == Status::ACCEPTED);
+        other.captureTimestampUs += 1;
+    }
+    SECTION("an earlier parity count") {
+        REQUIRE(reassembler.accept(parity.parity[0], START) == Status::ACCEPTED);
+        other.parityCount = 3;
+    }
+    CHECK(reassembler.accept(other, START) == Status::INVALID);
+}
+
+TEST_CASE("the parity of a frame that timed out is not used again") {
+    const TestFrame frame = makeTestFrame(THREE_FRAGMENTS, 5);
+    const TestParity parity = makeTestParity(frame, 5, 2);
+    fm::Reassembler reassembler;
+
+    REQUIRE(reassembler.accept(parity.parity[0], START) == Status::ACCEPTED);
+    reassembler.expire(START + 100ms);
+    CHECK(feed(reassembler, frame, {0, 1}, START + 200ms) == Status::ACCEPTED);
+    CHECK(reassembler.framesCompleted() == 0);
+}
+
+TEST_CASE("with random losses a frame comes out whole exactly when every group has enough packets") {
+    constexpr std::size_t fragments = 40;
+    constexpr std::size_t parityCount = 12;
+    constexpr std::size_t groups = 2;
+    constexpr int rounds = 200;
+    const TestFrame frame = makeTestFrame(fragments * fm::MAX_FRAGMENT_PAYLOAD - 50, 1);
+    const TestParity parity = makeTestParity(frame, 1, parityCount);
+    fm::Reassembler reassembler;
+    std::mt19937 random(7);
+    std::bernoulli_distribution lost(0.2);
+    int delivered = 0;
+
+    for (int round = 0; round < rounds; ++round) {
+        reassembler.reset();
+        std::array<std::size_t, groups> missing{};
+        std::array<std::size_t, groups> available{};
+        std::vector<std::pair<bool, std::size_t>> arrivals;
+        for (std::size_t index = 0; index < fragments; ++index) {
+            if (lost(random)) {
+                ++missing[index % groups];
+            } else {
+                arrivals.emplace_back(false, index);
+            }
+        }
+        for (std::size_t index = 0; index < parityCount; ++index) {
+            if (!lost(random)) {
+                ++available[index % groups];
+                arrivals.emplace_back(true, index);
+            }
+        }
+        std::ranges::shuffle(arrivals, random);
+
+        bool complete = false;
+        for (const auto& [isParity, index] : arrivals) {
+            const Status status = isParity ? reassembler.accept(parity.parity[index], START)
+                                           : reassembler.accept(frame.fragments[index], START);
+            if (status == Status::FRAME_COMPLETE) {
+                complete = true;
+                break;
+            }
+        }
+        REQUIRE(complete == (missing[0] <= available[0] && missing[1] <= available[1]));
+        if (complete) {
+            REQUIRE(holds(reassembler, frame));
+            ++delivered;
+        }
+    }
+    CHECK(delivered > 0);
+    CHECK(delivered < rounds);
 }

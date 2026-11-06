@@ -26,6 +26,7 @@ namespace fm {
         std::uint64_t ignoredPackets = 0;
         std::uint64_t framesCompleted = 0;
         std::uint64_t framesDropped = 0;
+        std::uint64_t framesRepaired = 0;
         std::uint64_t framesReplaced = 0;
         std::uint64_t senderRestarts = 0;
     };
@@ -68,6 +69,7 @@ namespace fm {
         std::atomic<std::uint64_t> ignoredPackets{0};
         std::atomic<std::uint64_t> framesCompleted{0};
         std::atomic<std::uint64_t> framesDropped{0};
+        std::atomic<std::uint64_t> framesRepaired{0};
         std::atomic<std::uint64_t> senderRestarts{0};
         std::atomic<TabletState> statusState{TabletState::IDLE};
         std::atomic<std::uint8_t> statusRejectReason{0};
@@ -87,6 +89,8 @@ namespace fm {
         void run() noexcept;
         void handlePacket(std::span<const std::uint8_t> packet, const Endpoint& from,
                           std::chrono::steady_clock::time_point arrival) noexcept;
+        void handleParity(std::span<const std::uint8_t> packet, std::chrono::steady_clock::time_point arrival) noexcept;
+        void noteFragmentStatus(FragmentStatus status, std::chrono::steady_clock::time_point arrival) noexcept;
         void publishCompletedFrame(std::chrono::steady_clock::time_point now) noexcept;
         void resetReassembler() noexcept;
         void noteDroppedFrames(std::chrono::steady_clock::time_point now) noexcept;
