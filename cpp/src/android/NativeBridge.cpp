@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 
 namespace fm {
@@ -24,6 +25,10 @@ namespace fm {
         constexpr jsize FRAME_INFO_COUNT = 7;
         constexpr jsize SESSION_STATUS_COUNT = 9;
         constexpr jlong UNKNOWN_ROUND_TRIP = -1;
+        constexpr jlong NO_CURSOR_SHAPE = -1;
+        constexpr unsigned SHAPE_HEIGHT_SHIFT = 16;
+        constexpr unsigned SHAPE_HOTSPOT_X_SHIFT = 32;
+        constexpr unsigned SHAPE_HOTSPOT_Y_SHIFT = 48;
 
         FrameReceiver* toReceiver(jlong handle) {
             return reinterpret_cast<FrameReceiver*>(static_cast<std::intptr_t>(handle));
@@ -89,7 +94,7 @@ namespace fm {
                                           .width = static_cast<std::uint16_t>(width),
                                           .height = static_cast<std::uint16_t>(height),
                                           .refreshHz = static_cast<std::uint16_t>(refreshHz),
-                                          .features = FeatureFlags::FEC};
+                                          .features = FeatureFlags::FEC | FeatureFlags::CURSOR_OVERLAY};
             auto receiver = FrameReceiver::openSession(settings);
             if (!receiver) {
                 throwIllegalState(environment, receiver.error().message);
@@ -177,11 +182,33 @@ namespace fm {
             return array;
         }
 
+        jlong cursorState(JNIEnv*, jclass, jlong handle) {
+            return static_cast<jlong>(toReceiver(handle)->cursorSnapshot());
+        }
+
+        jlong cursorShape(JNIEnv* environment, jclass, jlong handle, jlong state, jintArray pixels) {
+            const jsize length = environment->GetArrayLength(pixels);
+            auto* elements = static_cast<jint*>(environment->GetPrimitiveArrayCritical(pixels, nullptr));
+            if (elements == nullptr) {
+                return NO_CURSOR_SHAPE;
+            }
+            const auto info = toReceiver(handle)->copyCursorShape(
+                    static_cast<std::uint64_t>(state),
+                    std::span(reinterpret_cast<std::uint32_t*>(elements), static_cast<std::size_t>(length)));
+            environment->ReleasePrimitiveArrayCritical(pixels, elements, info ? 0 : JNI_ABORT);
+            if (!info) {
+                return NO_CURSOR_SHAPE;
+            }
+            return static_cast<jlong>(std::uint64_t{info->width} | (std::uint64_t{info->height} << SHAPE_HEIGHT_SHIFT) |
+                                      (std::uint64_t{info->hotspotX} << SHAPE_HOTSPOT_X_SHIFT) |
+                                      (std::uint64_t{info->hotspotY} << SHAPE_HOTSPOT_Y_SHIFT));
+        }
+
         void destroyReceiver(JNIEnv*, jclass, jlong handle) {
             delete toReceiver(handle);
         }
 
-        const std::array<JNINativeMethod, 10> NATIVE_METHODS{{
+        const std::array<JNINativeMethod, 12> NATIVE_METHODS{{
                 {"protocolVersion", "()I", reinterpret_cast<void*>(&protocolVersion)},
                 {"maxFrameSize", "()I", reinterpret_cast<void*>(&maxFrameSize)},
                 {"createReceiver", "(I)J", reinterpret_cast<void*>(&createReceiver)},
@@ -191,6 +218,8 @@ namespace fm {
                 {"requestKeyframe", "(J)V", reinterpret_cast<void*>(&requestKeyframe)},
                 {"reconnect", "(J)V", reinterpret_cast<void*>(&reconnect)},
                 {"sessionStatus", "(J)[J", reinterpret_cast<void*>(&sessionStatus)},
+                {"cursorState", "(J)J", reinterpret_cast<void*>(&cursorState)},
+                {"cursorShape", "(JJ[I)J", reinterpret_cast<void*>(&cursorShape)},
                 {"destroyReceiver", "(J)V", reinterpret_cast<void*>(&destroyReceiver)},
         }};
     }

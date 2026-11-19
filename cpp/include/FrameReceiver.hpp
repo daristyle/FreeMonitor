@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CursorReceiver.hpp"
 #include "Error.hpp"
 #include "FrameMailbox.hpp"
 #include "Packets.hpp"
@@ -56,11 +57,13 @@ namespace fm {
         std::chrono::milliseconds senderRestartTimeout;
         Reassembler reassembler;
         FrameMailbox<ReassembledFrame> mailbox;
+        CursorReceiver cursorReceiver;
         std::array<std::uint8_t, MAX_PACKET_SIZE> packetBuffer{};
         std::chrono::steady_clock::time_point lastCompletion;
         std::uint64_t framesDroppedBeforeReset = 0;
         std::uint64_t framesDroppedReported = 0;
         std::uint32_t lastSessionCount = 0;
+        TabletState lastSessionState = TabletState::IDLE;
         std::atomic<bool> stopRequested{false};
         std::atomic<bool> keyframeWanted{false};
         std::atomic<bool> reconnectWanted{false};
@@ -90,6 +93,9 @@ namespace fm {
         void handlePacket(std::span<const std::uint8_t> packet, const Endpoint& from,
                           std::chrono::steady_clock::time_point arrival) noexcept;
         void handleParity(std::span<const std::uint8_t> packet, std::chrono::steady_clock::time_point arrival) noexcept;
+        bool cursorOverlayOn() const noexcept;
+        void handleCursor(const CommonHeader& header, std::span<const std::uint8_t> packet,
+                          std::chrono::steady_clock::time_point arrival) noexcept;
         void noteFragmentStatus(FragmentStatus status, std::chrono::steady_clock::time_point arrival) noexcept;
         void publishCompletedFrame(std::chrono::steady_clock::time_point now) noexcept;
         void resetReassembler() noexcept;
@@ -120,5 +126,8 @@ namespace fm {
         void requestKeyframe() noexcept;
         void reconnect() noexcept;
         FrameReceiverSessionStatus sessionStatus() const noexcept;
+        std::uint64_t cursorSnapshot() const noexcept;
+        std::optional<CursorShapeInfo> copyCursorShape(std::uint64_t snapshot,
+                                                       std::span<std::uint32_t> argbPixels) const noexcept;
     };
 }

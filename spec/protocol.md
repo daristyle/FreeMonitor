@@ -204,6 +204,8 @@ Who draws the cursor depends on the `CURSOR_OVERLAY` feature ([7.2](#72-feature-
 - **Without `CURSOR_OVERLAY`** (the default): the host draws the cursor into the video and sends no cursor packets. The tablet draws nothing extra. This always works, even when the host's capture cannot deliver the cursor separately.
 - **With `CURSOR_OVERLAY`:** the host captures video without the cursor and sends the cursor separately: its position as small `CURSOR_POS` packets, and its image as `CURSOR_SHAPE` packets that are sent only when the image changes. The tablet draws the cursor on top of the video. Position updates skip capture and encoding, so the cursor moves with less delay than the video.
 
+A host whose capture already leaves the cursor out of the video requires `CURSOR_OVERLAY` ([7.2](#72-feature-negotiation)): it rejects a tablet that does not support it, so that tablet is never shown a picture without a cursor.
+
 Cursor packets are valid only in a session that uses `CURSOR_OVERLAY`. Otherwise receivers drop them. So the cursor is never drawn twice, and never missing.
 
 Coordinates are in pixels of the video frame, with `(0, 0)` at its top-left corner.
@@ -213,7 +215,7 @@ Coordinates are in pixels of the video frame, with `(0, 0)` at its top-left corn
 | Offset | Field       | Type | Description |
 |-------:|-------------|------|-------------|
 | 24     | `shapeId`   | u32  | Shape to draw; see [5.2](#52-cursor_shape). |
-| 28     | `x`         | i32  | Hotspot x. Negative or beyond the frame when the cursor is on another monitor. |
+| 28     | `x`         | i32  | Hotspot x. Negative or beyond the frame when the hotspot is outside it. |
 | 32     | `y`         | i32  | Hotspot y. Same as `x`. |
 | 36     | `flags`     | u8   | Bit 0 = `VISIBLE`. Bits 1–7 are reserved and must be `0`. |
 | 37     | `reserved0` | u8   | Must be `0`. |
@@ -224,7 +226,7 @@ Total size: 40 bytes. Informative Python `struct` format: `"!HBBIIIQIiiBBH"`.
 Sender:
 - Sends a `CURSOR_POS` packet whenever the position, shape or visibility changes, at most once per `CURSOR_POS_MIN_INTERVAL_MS`.
 - Repeats the latest state at least every `CURSOR_POS_REPEAT_INTERVAL_MS` even if nothing changed, so a lost packet is corrected.
-- Clears `VISIBLE` when the cursor is hidden or is on another monitor.
+- Clears `VISIBLE` when the cursor is hidden or is on another monitor. The cursor counts as on this monitor while any part of its image overlaps the frame; `x` and `y` may then be negative or beyond the frame.
 
 Receiver:
 - Ignores a `CURSOR_POS` packet whose `seq` is not newer than the last `CURSOR_POS` it accepted ([2.1](#21-seq)).
@@ -405,8 +407,9 @@ The host uses the difference between two consecutive `STATS`, computed modulo 2^
 | `1` | Unsupported protocol version. |
 | `2` | No codec in common. |
 | `3` | Invalid parameters, for example a width or height of `0`, or `codecs` without JPEG. |
+| `4` | A feature the host requires is missing from the `HELLO`'s `features` ([7.2](#72-feature-negotiation)). |
 
-All other values are reserved. A tablet that receives an unknown `reason` treats it as a rejection anyway.
+All other values are reserved. A tablet that receives an unknown `reason` treats it as a rejection anyway. So a later revision may give a reserved value a meaning without changing the `REJECT` packet, which stays frozen (below).
 
 The host sends at most one `REJECT` per `HELLO` it receives. A tablet that receives a `REJECT` matching its `HELLO`'s `sessionId` stops resending `HELLO` and shows the reason to the user.
 
@@ -447,7 +450,8 @@ The `features` byte at offset 39 of `HELLO` and `WELCOME` lets a host and a tabl
 - In `HELLO`, the tablet sets a bit for every feature it supports.
 - In `WELCOME`, the host sets the bits of the features it will use. They must be a subset of the bits in `HELLO`.
 - A feature is used only when its bit is set in `WELCOME`.
-- Senders set bits that are not assigned yet to `0`. Receivers **ignore** bits they do not know, and never drop a packet because of them. So an older peer simply answers without the feature, and the session works without it.
+- A host may require a feature it cannot work without, for example `CURSOR_OVERLAY` when its capture leaves the cursor out of the video. It answers a `HELLO` without that bit with `REJECT` reason `4` instead of a `WELCOME`.
+- Senders set bits that are not assigned yet to `0`. Receivers **ignore** bits they do not know, and never drop a packet because of them. So an older peer simply answers without the feature, and the session works without it, unless the host requires that feature (above).
 
 | Bit | Feature | Status |
 |----:|---------|--------|

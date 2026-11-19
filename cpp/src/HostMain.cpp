@@ -1,4 +1,6 @@
 #include "CaptureSource.hpp"
+#include "CursorSender.hpp"
+#include "CursorSource.hpp"
 #include "Encoder.hpp"
 #include "FrameTimingLog.hpp"
 #include "HostOptions.hpp"
@@ -43,6 +45,7 @@ namespace {
     constexpr std::chrono::milliseconds IDLE_REFRESH_MIN_INTERVAL{1000};
     constexpr int SEND_BUFFER_SIZE = 4 * 1024 * 1024;
     constexpr double BITS_PER_MEGABIT = 1'000'000.0;
+    constexpr double BITS_PER_KILOBIT = 1'000.0;
     constexpr double BYTES_PER_KILOBYTE = 1024.0;
     constexpr double PERCENT = 100.0;
 
@@ -108,14 +111,16 @@ namespace {
             std::println(stderr,
                          "                       [--position right|left|above|below|X,Y] [--destination IPv4:PORT]");
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
-            std::println(stderr, "                       [--fec PERCENT] [--timing-log FILE]");
+            std::println(stderr,
+                         "                       [--fec PERCENT] [--cursor auto|overlay|embedded] [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams video in development mode.");
             std::println(stderr, "  Without --destination, the host waits for a tablet on UDP port {}.", fm::HOST_PORT);
         } else {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
             std::println(stderr, "                       [--position right|left|above|below|X,Y]");
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
-            std::println(stderr, "                       [--fec PERCENT] [--timing-log FILE]");
+            std::println(stderr,
+                         "                       [--fec PERCENT] [--cursor auto|overlay|embedded] [--timing-log FILE]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. The host waits for a tablet on UDP port {}.",
                          fm::HOST_PORT);
         }
@@ -124,6 +129,13 @@ namespace {
                      "  --bitrate sets the H.264 bitrate in Mbit/s (default 20). --quality sets the JPEG quality.");
         std::println(stderr, "  --fec sets the parity per frame in percent (default {}). 0 turns it off.",
                      fm::DEFAULT_FEC_PERCENT);
+        std::println(stderr,
+                     "  --cursor overlay lets the tablet draw the cursor, embedded keeps it in the video. auto (the");
+        std::println(stderr,
+                     "    default) uses the overlay when the desktop allows it, and embedded in development mode.");
+        std::println(
+                stderr,
+                "    Hyprland draws the cursor into the virtual monitor's picture, so there it is always embedded.");
         std::println(stderr, "  --timing-log writes one CSV line of stage timestamps per frame.");
     }
 
@@ -164,6 +176,8 @@ namespace {
                 return "no codec in common";
             case fm::RejectReason::INVALID_PARAMETERS:
                 return "its HELLO has invalid parameters";
+            case fm::RejectReason::MISSING_FEATURE:
+                return "it does not support the cursor overlay this host needs";
         }
         return "unknown reason";
     }
@@ -217,7 +231,14 @@ namespace {
         return {};
     }
 
-    fm::HostOffer offerFor(const EncoderSlot& slot, std::uint8_t fecPercent) {
+    struct CursorTargetKey {
+        std::uint32_t sessionId = 0;
+        fm::Endpoint peer;
+
+        friend bool operator==(const CursorTargetKey&, const CursorTargetKey&) = default;
+    };
+
+    fm::HostOffer offerFor(const EncoderSlot& slot, std::uint8_t fecPercent, bool cursorOverlay) {
         fm::HostOffer offer;
         offer.width = static_cast<std::uint16_t>(slot.config.width & ~1U);
         offer.height = static_cast<std::uint16_t>(slot.config.height & ~1U);
@@ -226,6 +247,10 @@ namespace {
                                ? static_cast<std::uint8_t>(fm::CodecFlags::JPEG | fm::CodecFlags::H264)
                                : fm::CodecFlags::JPEG;
         offer.features = fecPercent > 0 ? fm::FeatureFlags::FEC : std::uint8_t{0};
+        if (cursorOverlay) {
+            offer.features |= fm::FeatureFlags::CURSOR_OVERLAY;
+            offer.requiredFeatures = fm::FeatureFlags::CURSOR_OVERLAY;
+        }
         return offer;
     }
 
@@ -321,7 +346,8 @@ int main(int argumentCount, char** arguments) {
     SessionEvents sessionEvents;
     std::optional<fm::HostSessions> sessions;
     if (options->destination) {
-        developmentSession = fm::Session{.peer = *options->destination, .sessionId = 0, .nextSeq = randomDevice()};
+        developmentSession =
+                fm::Session{.peer = *options->destination, .sessionId = 0, .seq = fm::SequenceCounter(randomDevice())};
         std::print("Development mode: streaming with sessionId 0 to ");
         printEndpoint(*options->destination);
     } else {
@@ -351,11 +377,63 @@ int main(int argumentCount, char** arguments) {
     std::println("Virtual monitor {} is {}x{} at {} Hz.", captureTarget->outputName, captureTarget->width,
                  captureTarget->height, options->displayMode.refreshRateHz);
 
+    const bool developmentMode = options->destination.has_value();
+    std::unique_ptr<fm::CursorSource> cursorSource;
+    const bool overlayWanted = options->cursor == fm::CursorChoice::OVERLAY ||
+                               (options->cursor == fm::CursorChoice::AUTO && !developmentMode);
+    if (overlayWanted && captureTarget->cursorInPicture) {
+        if (options->cursor == fm::CursorChoice::OVERLAY) {
+            std::println(stderr,
+                         "The desktop draws the cursor into the picture of {}, so the cursor overlay is not possible.",
+                         captureTarget->outputName);
+            return 1;
+        }
+        std::println("The cursor stays in the video: the desktop draws it into the picture of {}.",
+                     captureTarget->outputName);
+    } else if (overlayWanted) {
+        cursorSource = fm::createCursorSource();
+        if (auto started = cursorSource->start(*captureTarget); !started) {
+            if (options->cursor == fm::CursorChoice::OVERLAY) {
+                std::println(stderr, "Could not follow the cursor for the overlay: {}", started.error().message);
+                return 1;
+            }
+            std::println("The cursor stays in the video: {}.", started.error().message);
+            cursorSource.reset();
+        }
+    }
+    captureTarget->hideCursor = cursorSource != nullptr;
+
     std::println("Starting capture. Share {} if a screen sharing dialog appears.", captureTarget->outputName);
     auto captureSource = fm::createCaptureSource();
     if (auto started = captureSource->start(*captureTarget); !started) {
         std::println(stderr, "Could not start capture: {}", started.error().message);
         return 1;
+    }
+    if (cursorSource && !captureSource->cursorHidden()) {
+        if (options->cursor == fm::CursorChoice::OVERLAY) {
+            std::println(stderr,
+                         "The screen capture cannot leave the cursor out, so the cursor overlay is not possible.");
+            return 1;
+        }
+        std::println("The screen capture keeps the cursor in the video, so the cursor overlay is off.");
+        cursorSource.reset();
+    }
+    if (!cursorSource && captureSource->cursorHidden()) {
+        std::println(stderr, "Warning: the screen capture leaves the cursor out, so the tablet shows no cursor.");
+    }
+    const bool cursorOverlay = cursorSource != nullptr;
+    std::optional<fm::CursorSender> cursorSender;
+    std::optional<CursorTargetKey> cursorTargetKey;
+    if (cursorOverlay) {
+        cursorSender.emplace(udpSocket, *cursorSource,
+                             developmentMode ? std::optional{KEYFRAME_INTERVAL} : std::nullopt);
+        if (developmentMode) {
+            cursorSender->setTarget(
+                    fm::CursorTarget{.peer = developmentSession.peer, .sessionId = 0, .seq = developmentSession.seq});
+        }
+        cursorSender->start();
+        std::println("Cursor overlay on: the tablet draws the cursor{}.",
+                     developmentMode ? "" : ", and a tablet that cannot is rejected");
     }
     std::signal(SIGINT, onStopSignal);
     std::signal(SIGTERM, onStopSignal);
@@ -393,6 +471,8 @@ int main(int argumentCount, char** arguments) {
     std::uint64_t periodPackets = 0;
     std::uint64_t periodBytes = 0;
     std::uint64_t sendFailures = 0;
+    fm::CursorSendCounts reportedCursorCounts;
+    bool cursorLossReported = false;
     int exitCode = 0;
 
     fm::CapturedFrame capturedFrame;
@@ -413,6 +493,23 @@ int main(int argumentCount, char** arguments) {
             sessions->poll(Clock::now());
             if (sessions->takeKeyframeRequest()) {
                 keyframeOwed = true;
+            }
+            if (cursorSender) {
+                const fm::Session* streaming = sessions->streamingSession();
+                std::optional<CursorTargetKey> key;
+                if (streaming != nullptr && (streaming->features & fm::FeatureFlags::CURSOR_OVERLAY) != 0) {
+                    key = CursorTargetKey{.sessionId = streaming->sessionId, .peer = streaming->peer};
+                }
+                if (key != cursorTargetKey) {
+                    cursorTargetKey = key;
+                    cursorSender->setTarget(key ? std::optional{fm::CursorTarget{.peer = streaming->peer,
+                                                                                 .sessionId = streaming->sessionId,
+                                                                                 .seq = streaming->seq}}
+                                                : std::nullopt);
+                }
+                if (const auto shapeId = sessions->takeShapeRequest()) {
+                    cursorSender->requestShape(*shapeId);
+                }
             }
         }
 
@@ -437,6 +534,22 @@ int main(int argumentCount, char** arguments) {
                              static_cast<int>(static_cast<double>(periodPackets) / periodSeconds + 0.5),
                              captureToSendTimes.averageMilliseconds(), captureToSendTimes.maximumMilliseconds(),
                              sendFailures);
+            }
+            if (cursorSender) {
+                const fm::CursorSendCounts counts = cursorSender->counts();
+                if (!sessions || sessions->streamingSession() != nullptr) {
+                    std::println("     | cursor {:4} packets/s {:6.1f} kbit/s",
+                                 static_cast<int>(static_cast<double>(counts.packets - reportedCursorCounts.packets) /
+                                                          periodSeconds +
+                                                  0.5),
+                                 static_cast<double>(counts.bytes - reportedCursorCounts.bytes) * 8.0 / periodSeconds /
+                                         BITS_PER_KILOBIT);
+                }
+                reportedCursorCounts = counts;
+                if (cursorSender->lost() && !cursorLossReported) {
+                    std::println(stderr, "The cursor source stopped, so the tablet gets no more cursor updates.");
+                    cursorLossReported = true;
+                }
             }
             if (sessions) {
                 const auto report = sessions->report();
@@ -511,7 +624,7 @@ int main(int argumentCount, char** arguments) {
                     break;
                 }
                 if (sessions) {
-                    sessions->setOffer(offerFor(mainEncoder, options->fecPercent));
+                    sessions->setOffer(offerFor(mainEncoder, options->fecPercent, cursorOverlay));
                     const auto codec = mainEncoder.encoder->codec();
                     if (previousCodec && codec != previousCodec && activeEncoder == &mainEncoder &&
                         sessions->streamingSession() != nullptr) {
@@ -597,6 +710,9 @@ int main(int argumentCount, char** arguments) {
         }
     }
 
+    if (cursorSender) {
+        cursorSender->stop();
+    }
     if (sessions) {
         sessions->close(Clock::now());
         const auto byeDeadline = Clock::now() + BYE_WAIT_LIMIT;

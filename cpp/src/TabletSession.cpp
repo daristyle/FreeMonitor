@@ -25,7 +25,7 @@ namespace fm {
         while (newSessionId == 0 || newSessionId == session.sessionId) {
             newSessionId = randomNumber();
         }
-        session = Session{.peer = settings.host, .sessionId = newSessionId, .nextSeq = randomNumber()};
+        session = Session{.peer = settings.host, .sessionId = newSessionId, .seq = SequenceCounter(randomNumber())};
         host.reset(settings.host, now);
         reliableSender.reset();
         reliableReceiver.reset();
@@ -143,16 +143,15 @@ namespace fm {
             return;
         }
         if (const auto due = reliableSender.due(now, HELLO_RESEND_INTERVAL); !due.empty()) {
-            restampHeader(due, session.nextSeq, toTimestampUs(now));
+            restampHeader(due, session.seq.next(), toTimestampUs(now));
             transport.send(due, session.peer);
-            ++session.nextSeq;
         }
         if (currentState != TabletState::CONNECTED) {
             return;
         }
         if (now >= nextHeartbeatTime) {
-            sendPacket(session, writeControlPacket(heartbeatEcho.nextHeartbeat(now), session.sessionId, session.nextSeq,
-                                                   toTimestampUs(now), sendBuffer));
+            sendPacket(session, writeControlPacket(heartbeatEcho.nextHeartbeat(now), session.sessionId,
+                                                   session.seq.next(), toTimestampUs(now), sendBuffer));
             nextHeartbeatTime = now + HEARTBEAT_INTERVAL;
         }
         if (now >= nextStatsTime) {
@@ -187,6 +186,16 @@ namespace fm {
         }
         keyframePending = true;
         sendKeyframeRequest(now);
+    }
+
+    void TabletSession::sendShapeRequest(std::uint32_t shapeId, std::chrono::steady_clock::time_point now) noexcept {
+        if (currentState != TabletState::CONNECTED) {
+            return;
+        }
+        ShapeRequest request;
+        request.shapeId = shapeId;
+        sendPacket(session,
+                   writeControlPacket(request, session.sessionId, session.seq.next(), toTimestampUs(now), sendBuffer));
     }
 
     void TabletSession::keyframeReceived() noexcept {
@@ -239,20 +248,19 @@ namespace fm {
                (welcome.features & KNOWN_FEATURES & ~settings.features) == 0;
     }
 
-    void TabletSession::sendPacket(Session& target, std::size_t size) noexcept {
+    void TabletSession::sendPacket(const Session& target, std::size_t size) noexcept {
         transport.send(std::span(sendBuffer).first(size), target.peer);
-        ++target.nextSeq;
     }
 
     void TabletSession::sendAck(std::uint32_t msgId, std::chrono::steady_clock::time_point now) noexcept {
         ACK ack;
         ack.ackedMsgId = msgId;
         sendPacket(session,
-                   writeControlPacket(ack, session.sessionId, session.nextSeq, toTimestampUs(now), sendBuffer));
+                   writeControlPacket(ack, session.sessionId, session.seq.next(), toTimestampUs(now), sendBuffer));
     }
 
     void TabletSession::sendKeyframeRequest(std::chrono::steady_clock::time_point now) noexcept {
-        sendPacket(session, writeControlPacket(KeyframeRequest{}, session.sessionId, session.nextSeq,
+        sendPacket(session, writeControlPacket(KeyframeRequest{}, session.sessionId, session.seq.next(),
                                                toTimestampUs(now), sendBuffer));
         nextKeyframeRequestTime = now + KEYFRAME_REQUEST_REPEAT_INTERVAL;
     }
@@ -265,15 +273,15 @@ namespace fm {
         stats.framesDropped = framesDropped;
         stats.bytesReceived = host.bytes();
         sendPacket(session,
-                   writeControlPacket(stats, session.sessionId, session.nextSeq, toTimestampUs(now), sendBuffer));
+                   writeControlPacket(stats, session.sessionId, session.seq.next(), toTimestampUs(now), sendBuffer));
     }
 
     void TabletSession::sendDueBye(std::chrono::steady_clock::time_point now) noexcept {
         if (byesRemaining == 0 || now < nextByeTime) {
             return;
         }
-        sendPacket(byeSession,
-                   writeControlPacket(Bye{}, byeSession.sessionId, byeSession.nextSeq, toTimestampUs(now), sendBuffer));
+        sendPacket(byeSession, writeControlPacket(Bye{}, byeSession.sessionId, byeSession.seq.next(),
+                                                  toTimestampUs(now), sendBuffer));
         --byesRemaining;
         nextByeTime = now + BYE_REPEAT_INTERVAL;
     }

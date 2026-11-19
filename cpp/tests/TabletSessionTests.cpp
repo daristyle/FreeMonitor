@@ -240,6 +240,26 @@ TEST_CASE("a keyframe request is repeated every 200 ms until a keyframe arrives,
     CHECK(tablet.transport.ofType(fm::PacketType::KEYFRAME_REQUEST).size() == 2);
 }
 
+TEST_CASE("a shape request goes out only while connected, once per call, as an unacknowledged SHAPE_REQUEST") {
+    TabletFixture tablet;
+    tablet.session.start(START);
+    tablet.session.sendShapeRequest(5, START);
+    CHECK(tablet.transport.ofType(fm::PacketType::SHAPE_REQUEST).empty());
+
+    tablet.connect();
+    tablet.session.sendShapeRequest(5, START + 1ms);
+    const auto sent = tablet.transport.ofType(fm::PacketType::SHAPE_REQUEST);
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].to == HOST_ADDRESS);
+    fm::ShapeRequest request;
+    REQUIRE(request.read(sent[0].bytes));
+    CHECK(request.shapeId == 5);
+    CHECK(request.commonHeader.sessionId == tablet.id());
+
+    tablet.session.poll(START + 1s);
+    CHECK(tablet.transport.ofType(fm::PacketType::SHAPE_REQUEST).size() == 1);
+}
+
 TEST_CASE("media packets of the session are handed on only while connected") {
     TabletFixture tablet;
     tablet.session.start(START);

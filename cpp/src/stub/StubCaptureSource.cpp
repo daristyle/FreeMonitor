@@ -86,4 +86,8 @@ namespace fm {
         frameHeld = false;
     }
 
+    bool StubCaptureSource::cursorHidden() const noexcept {
+        return true;
+    }
+
 }

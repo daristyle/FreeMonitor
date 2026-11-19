@@ -57,6 +57,7 @@ class RejectReason(IntEnum):
     UNSUPPORTED_VERSION = 1
     NO_COMMON_CODEC = 2
     INVALID_PARAMETERS = 3
+    MISSING_FEATURE = 4
 
 
 class FragmentFlags(IntFlag):

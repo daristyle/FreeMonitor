@@ -203,13 +203,13 @@ namespace fm {
         mailbox.reset();
 
         std::optional<RestoreTokenStore> tokenStore;
-        if (auto tokenPath = RestoreTokenStore::defaultPath(target.outputName)) {
+        if (auto tokenPath = RestoreTokenStore::defaultPath(target.outputName, target.hideCursor)) {
             tokenStore.emplace(*tokenPath);
         }
         const std::optional<std::string> restoreToken = tokenStore ? tokenStore->load() : std::nullopt;
 
         portal = std::make_unique<PortalScreenCast>();
-        auto screenCast = portal->start(restoreToken);
+        auto screenCast = portal->start(restoreToken, target.hideCursor);
         if (!screenCast) {
             portal.reset();
             return std::unexpected(screenCast.error());
@@ -234,6 +234,7 @@ namespace fm {
             portal.reset();
             return std::unexpected(connected.error());
         }
+        hidesCursor = screenCast->cursorHidden;
         started = true;
         return {};
     }
@@ -378,5 +379,9 @@ namespace fm {
 
     void PipeWireCaptureSource::releaseFrame() noexcept {
         mailbox.release();
+    }
+
+    bool PipeWireCaptureSource::cursorHidden() const noexcept {
+        return hidesCursor;
     }
 }

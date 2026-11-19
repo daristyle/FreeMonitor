@@ -45,6 +45,7 @@ class SessionStatusTests {
         assertEquals(RejectReason.UNSUPPORTED_VERSION, RejectReason.fromId(1))
         assertEquals(RejectReason.NO_COMMON_CODEC, RejectReason.fromId(2))
         assertEquals(RejectReason.INVALID_PARAMETERS, RejectReason.fromId(3))
+        assertEquals(RejectReason.MISSING_FEATURE, RejectReason.fromId(4))
         assertEquals(RejectReason.UNKNOWN, RejectReason.fromId(0))
         assertEquals(RejectReason.UNKNOWN, RejectReason.fromId(9))
     }

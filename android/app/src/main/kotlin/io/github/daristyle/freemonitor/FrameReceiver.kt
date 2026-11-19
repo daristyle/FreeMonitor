@@ -35,6 +35,19 @@ class FrameReceiver private constructor(
         }
     }
 
+    fun cursorState(): CursorState =
+        if (handle != 0L) CursorState(NativeBridge.cursorState(handle)) else CursorState.EMPTY
+
+    fun cursorShape(
+        state: CursorState,
+        pixels: IntArray,
+    ): CursorShapeInfo =
+        if (handle != 0L) {
+            CursorShapeInfo(NativeBridge.cursorShape(handle, state.packed, pixels))
+        } else {
+            CursorShapeInfo.NONE
+        }
+
     override fun close() {
         if (handle != 0L) {
             NativeBridge.destroyReceiver(handle)

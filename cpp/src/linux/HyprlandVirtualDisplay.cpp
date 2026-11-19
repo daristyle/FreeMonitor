@@ -295,7 +295,8 @@ namespace fm {
         moveRememberedWorkspaces(*after);
         hostLock = std::move(*lock);
         created = true;
-        return CaptureTarget{outputName, mode.width, mode.height};
+        return CaptureTarget{
+                .outputName = outputName, .width = mode.width, .height = mode.height, .cursorInPicture = true};
     }
 
     void HyprlandVirtualDisplay::destroy() {

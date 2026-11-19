@@ -262,6 +262,12 @@ TEST_CASE("a HELLO the host cannot accept is answered with REJECT and the right 
         hello[2] = 2;
         expected = fm::RejectReason::UNSUPPORTED_VERSION;
     }
+    SECTION("a feature the host requires is missing") {
+        offer.features = fm::FeatureFlags::CURSOR_OVERLAY | fm::FeatureFlags::FEC;
+        offer.requiredFeatures = fm::FeatureFlags::CURSOR_OVERLAY;
+        hello = helloPacket(TABLET_SESSION, 1, 1, 2944, 1840, BOTH_CODECS, fm::FeatureFlags::FEC);
+        expected = fm::RejectReason::MISSING_FEATURE;
+    }
     HostFixture host(offer);
     host.sessions.handlePacket(hello, TABLET_ADDRESS, START);
 
@@ -275,6 +281,42 @@ TEST_CASE("a HELLO the host cannot accept is answered with REJECT and the right 
     CHECK(reject.reason == static_cast<std::uint8_t>(expected));
     CHECK(reject.version == fm::PROTOCOL_VERSION);
     CHECK(host.listener.started.empty());
+}
+
+TEST_CASE("a tablet with every required feature gets a session that uses them") {
+    fm::HostOffer offer = OFFER;
+    offer.features = fm::FeatureFlags::CURSOR_OVERLAY | fm::FeatureFlags::FEC;
+    offer.requiredFeatures = fm::FeatureFlags::CURSOR_OVERLAY;
+    HostFixture host(offer);
+    host.sessions.handlePacket(
+            helloPacket(TABLET_SESSION, 100, 1, 2944, 1840, BOTH_CODECS, fm::FeatureFlags::CURSOR_OVERLAY),
+            TABLET_ADDRESS, START);
+    host.sessions.handlePacket(ackPacket(TABLET_SESSION, 101, 1), TABLET_ADDRESS, START);
+
+    const fm::Session* session = host.sessions.streamingSession();
+    REQUIRE(session != nullptr);
+    CHECK(session->features == fm::FeatureFlags::CURSOR_OVERLAY);
+    CHECK(host.transport.ofType(fm::PacketType::REJECT).empty());
+}
+
+TEST_CASE("a SHAPE_REQUEST is passed on once, and only in a streaming session with the cursor overlay") {
+    fm::HostOffer offer = OFFER;
+    offer.features = fm::FeatureFlags::CURSOR_OVERLAY;
+    HostFixture host(offer);
+    const auto features = GENERATE(fm::FeatureFlags::CURSOR_OVERLAY, NO_FEATURES);
+    host.sessions.handlePacket(helloPacket(TABLET_SESSION, 100, 1, 2944, 1840, BOTH_CODECS, features), TABLET_ADDRESS,
+                               START);
+
+    host.sessions.handlePacket(shapeRequestPacket(TABLET_SESSION, 101, 3), TABLET_ADDRESS, START);
+    CHECK_FALSE(host.sessions.takeShapeRequest());
+
+    host.sessions.handlePacket(ackPacket(TABLET_SESSION, 102, 1), TABLET_ADDRESS, START);
+    host.sessions.handlePacket(shapeRequestPacket(TABLET_SESSION, 103, 3), TABLET_ADDRESS, START + 1ms);
+    host.sessions.handlePacket(shapeRequestPacket(TABLET_SESSION, 104, 4), TABLET_ADDRESS, START + 2ms);
+    if (features == fm::FeatureFlags::CURSOR_OVERLAY) {
+        CHECK(host.sessions.takeShapeRequest() == 4U);
+    }
+    CHECK_FALSE(host.sessions.takeShapeRequest());
 }
 
 TEST_CASE("invalid packets and packets of other sessions change nothing") {
@@ -317,8 +359,10 @@ TEST_CASE("control packets and video share one seq counter per session") {
     host.establish();
     fm::Session* session = host.sessions.streamingSession();
     REQUIRE(session != nullptr);
-    const std::uint32_t beforeVideo = session->nextSeq;
-    session->nextSeq += 3;
+    const std::uint32_t beforeVideo = session->seq.peek();
+    for (int packet = 0; packet < 3; ++packet) {
+        static_cast<void>(session->seq.next());
+    }
     host.sessions.poll(START + 500ms);
     const auto heartbeats = host.transport.ofType(fm::PacketType::HEARTBEAT);
     REQUIRE(heartbeats.size() == 1);

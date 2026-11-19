@@ -21,8 +21,6 @@ namespace fm {
         constexpr const char* SESSION_INTERFACE = "org.freedesktop.portal.Session";
 
         constexpr std::uint32_t SOURCE_TYPE_MONITOR = 1;
-        constexpr std::uint32_t CURSOR_MODE_HIDDEN = 1;
-        constexpr std::uint32_t CURSOR_MODE_EMBEDDED = 2;
         constexpr std::uint32_t PERSIST_MODE_UNTIL_REVOKED = 2;
         constexpr std::uint32_t FIRST_VERSION_WITH_RESTORE_TOKEN = 4;
         constexpr std::uint32_t RESPONSE_SUCCESS = 0;
@@ -339,6 +337,14 @@ namespace fm {
         return path;
     }
 
+    std::uint32_t PortalScreenCast::chooseCursorMode(std::uint32_t availableModes, bool hideCursor) noexcept {
+        const std::uint32_t wanted = hideCursor ? CURSOR_MODE_HIDDEN : CURSOR_MODE_EMBEDDED;
+        if ((availableModes & wanted) != 0) {
+            return wanted;
+        }
+        return (availableModes & CURSOR_MODE_EMBEDDED) != 0 ? CURSOR_MODE_EMBEDDED : CURSOR_MODE_HIDDEN;
+    }
+
     std::string PortalScreenCast::nextToken(std::string_view prefix) {
         std::string token(prefix);
         token += '_';
@@ -346,7 +352,7 @@ namespace fm {
         return token;
     }
 
-    Result<ScreenCastStream> PortalScreenCast::start(const std::optional<std::string>& restoreToken) {
+    Result<ScreenCastStream> PortalScreenCast::start(const std::optional<std::string>& restoreToken, bool hideCursor) {
         if (bus != nullptr) {
             return std::unexpected(Error{ErrorCode::INVALID_STATE, "Portal session is already started"});
         }
@@ -375,8 +381,7 @@ namespace fm {
         if (!cursorModes) {
             return fail(cursorModes.error());
         }
-        const std::uint32_t cursorMode =
-                (*cursorModes & CURSOR_MODE_EMBEDDED) != 0 ? CURSOR_MODE_EMBEDDED : CURSOR_MODE_HIDDEN;
+        const std::uint32_t cursorMode = chooseCursorMode(*cursorModes, hideCursor);
         const bool supportsRestoreToken = *version >= FIRST_VERSION_WITH_RESTORE_TOKEN;
 
         if (auto created = createSession(); !created) {
@@ -394,6 +399,7 @@ namespace fm {
             return fail(descriptor.error());
         }
         stream->pipeWireDescriptor = *descriptor;
+        stream->cursorHidden = cursorMode == CURSOR_MODE_HIDDEN;
         return stream;
     }
 

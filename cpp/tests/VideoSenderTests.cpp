@@ -51,7 +51,8 @@ namespace {
 
         explicit Loopback(std::uint32_t firstSeq) {
             (void) receiver.setReceiveBufferSize(RECEIVE_BUFFER_SIZE);
-            session = fm::Session{.peer = localEndpointOf(receiver), .sessionId = SESSION_ID, .nextSeq = firstSeq};
+            session = fm::Session{
+                    .peer = localEndpointOf(receiver), .sessionId = SESSION_ID, .seq = fm::SequenceCounter(firstSeq)};
         }
 
         std::vector<std::vector<std::uint8_t>> receive(std::size_t count) {
@@ -97,7 +98,7 @@ TEST_CASE("a sent frame arrives over loopback and reassembles to the same bytes"
     CHECK(result.frameId == firstFrameId);
     CHECK(result.packetsSent == expectedPackets);
     CHECK(result.bytesSent == expectedPackets * fm::VideoFragment::SIZE + frameSize);
-    CHECK(loopback.session.nextSeq == firstSeq + expectedPackets);
+    CHECK(loopback.session.seq.peek() == firstSeq + expectedPackets);
 
     const auto packets = loopback.receive(expectedPackets);
     CHECK(loopback.nothingMoreArrives());
@@ -145,7 +146,7 @@ TEST_CASE("frameId goes up per frame and seq carries on across frames through th
             fm::FrameSendStatus::FRAME_SENT);
     REQUIRE(videoSender.send(makeEncodedFrame(secondData, false), fm::Codec::H264, loopback.session).status ==
             fm::FrameSendStatus::FRAME_SENT);
-    CHECK(loopback.session.nextSeq == 2);
+    CHECK(loopback.session.seq.peek() == 2);
 
     const auto packets = loopback.receive(4);
     const std::uint32_t expectedSeqs[] = {0xFFFF'FFFE, 0xFFFF'FFFF, 0, 1};
@@ -194,7 +195,7 @@ TEST_CASE("an invalid frame sends nothing and uses no frameId or seq") {
         CHECK(result.status == fm::FrameSendStatus::INVALID_FRAME);
         CHECK(result.packetsSent == 0);
     }
-    CHECK(loopback.session.nextSeq == firstSeq);
+    CHECK(loopback.session.seq.peek() == firstSeq);
     CHECK(loopback.nothingMoreArrives());
 
     const auto data = makeFrameData(10);
@@ -205,7 +206,7 @@ TEST_CASE("an invalid frame sends nothing and uses no frameId or seq") {
     CHECK(fragment.commonHeader.seq == firstSeq);
 }
 
-TEST_CASE("a failed send stops the frame and keeps the seq of the unsent packet") {
+TEST_CASE("a failed send stops the frame, and the unsent packet's seq stays a gap") {
     constexpr std::uint32_t firstSeq = 500;
     constexpr std::uint32_t firstFrameId = 40;
 
@@ -220,14 +221,14 @@ TEST_CASE("a failed send stops the frame and keeps the seq of the unsent packet"
     CHECK(result.frameId == firstFrameId);
     CHECK(result.packetsSent == 0);
     CHECK(result.bytesSent == 0);
-    CHECK(loopback.session.nextSeq == firstSeq);
+    CHECK(loopback.session.seq.peek() == firstSeq + 1);
 
     loopback.session.peer = receiverEndpoint;
     REQUIRE(videoSender.send(makeEncodedFrame(data, true), fm::Codec::JPEG, loopback.session).status ==
             fm::FrameSendStatus::FRAME_SENT);
     const auto fragment = parse(loopback.receive(3)[0]);
     CHECK(fragment.frameId == firstFrameId + 1);
-    CHECK(fragment.commonHeader.seq == firstSeq);
+    CHECK(fragment.commonHeader.seq == firstSeq + 1);
 }
 
 TEST_CASE("parity follows a frame's fragments and rebuilds the lost ones") {
@@ -249,7 +250,7 @@ TEST_CASE("parity follows a frame's fragments and rebuilds the lost ones") {
     const auto result = videoSender.sendParity(30, loopback.session);
     CHECK(result.packetsSent == parityPackets);
     CHECK(result.bytesSent == parityPackets * (fm::VideoParity::SIZE + fm::MAX_PARITY_PAYLOAD));
-    CHECK(loopback.session.nextSeq == firstSeq + fragments + parityPackets);
+    CHECK(loopback.session.seq.peek() == firstSeq + fragments + parityPackets);
 
     auto packets = loopback.receive(fragments + parityPackets);
     CHECK(loopback.nothingMoreArrives());
@@ -311,11 +312,11 @@ TEST_CASE("no parity goes out without the FEC feature, at 0 percent or after an 
     const auto result = videoSender.sendParity(percent, loopback.session);
     CHECK(result.packetsSent == 0);
     CHECK(result.bytesSent == 0);
-    CHECK(loopback.session.nextSeq == expectedSeq);
+    CHECK(loopback.session.seq.peek() == expectedSeq);
     CHECK(loopback.nothingMoreArrives());
 }
 
-TEST_CASE("a failed parity send stops the parity and keeps the seq of the unsent packet") {
+TEST_CASE("a failed parity send stops the parity, and the unsent packet's seq stays a gap") {
     constexpr std::uint32_t firstSeq = 700;
     constexpr std::uint16_t fragments = 4;
 
@@ -331,5 +332,5 @@ TEST_CASE("a failed parity send stops the parity and keeps the seq of the unsent
     const auto result = videoSender.sendParity(30, loopback.session);
     CHECK(result.packetsSent == 0);
     CHECK(result.bytesSent == 0);
-    CHECK(loopback.session.nextSeq == firstSeq + fragments);
+    CHECK(loopback.session.seq.peek() == firstSeq + fragments + 1);
 }

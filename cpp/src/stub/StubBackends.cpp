@@ -1,4 +1,5 @@
 #include "stub/StubCaptureSource.hpp"
+#include "stub/StubCursorSource.hpp"
 #include "stub/StubEncoder.hpp"
 #include "stub/StubVirtualDisplay.hpp"
 
@@ -13,6 +14,10 @@ namespace fm {
 
     std::unique_ptr<VirtualDisplay> createVirtualDisplay() {
         return std::make_unique<StubVirtualDisplay>();
+    }
+
+    std::unique_ptr<CursorSource> createCursorSource() {
+        return std::make_unique<StubCursorSource>();
     }
 
 }

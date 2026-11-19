@@ -26,6 +26,7 @@ class MainActivity :
     private lateinit var container: FrameLayout
     private lateinit var waitingView: TextView
     private lateinit var statusView: TextView
+    private lateinit var cursorView: CursorView
     private var surfaceView: SurfaceView? = null
     private var receiver: FrameReceiver? = null
     private var timingLog: FrameTimingLog? = null
@@ -50,9 +51,11 @@ class MainActivity :
                 val padding = (STATUS_PADDING_DP * resources.displayMetrics.density).toInt()
                 setPadding(padding, padding, padding, padding)
             }
+        cursorView = CursorView(this)
         container =
             FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
+                addView(cursorView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 addView(waitingView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
                 addView(
                     statusView,
@@ -88,6 +91,7 @@ class MainActivity :
             saveHost(host)
         }
         receiver = newReceiver
+        cursorView.start(newReceiver)
         timingLog = if (intent.getBooleanExtra(TIMING_LOG_EXTRA, false)) openTimingLog() else null
         val view = surfaceView
         renderer =
@@ -96,7 +100,7 @@ class MainActivity :
                 newReceiver,
                 timingLog,
                 ::onRenderStatus,
-                onVideoSize = { size -> container.post { fitSurfaceView(view, size) } },
+                onVideoSize = { size -> container.post { onVideoSize(view, size) } },
                 onCodecChanged = { container.post { replaceSurfaceView(view) } },
             ).also { it.start() }
     }
@@ -109,6 +113,7 @@ class MainActivity :
     ) = Unit
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
+        cursorView.stop()
         renderer?.stop()
         renderer = null
         timingLog?.let(::closeTimingLog)
@@ -176,11 +181,22 @@ class MainActivity :
         addSurfaceView()
     }
 
-    private fun fitSurfaceView(
+    private fun onVideoSize(
         view: SurfaceView?,
         size: VideoSize,
     ) {
-        if (view == null || view !== surfaceView || container.width == 0 || container.height == 0) {
+        if (view == null || view !== surfaceView) {
+            return
+        }
+        cursorView.setVideoSize(size)
+        fitSurfaceView(view, size)
+    }
+
+    private fun fitSurfaceView(
+        view: SurfaceView,
+        size: VideoSize,
+    ) {
+        if (container.width == 0 || container.height == 0) {
             return
         }
         val fit = FitRectangle.fit(size.width, size.height, container.width, container.height)
@@ -248,6 +264,7 @@ class MainActivity :
                 RejectReason.UNSUPPORTED_VERSION -> R.string.reject_unsupported_version
                 RejectReason.NO_COMMON_CODEC -> R.string.reject_no_common_codec
                 RejectReason.INVALID_PARAMETERS -> R.string.reject_invalid_parameters
+                RejectReason.MISSING_FEATURE -> R.string.reject_missing_feature
                 RejectReason.UNKNOWN -> R.string.reject_unknown
             },
         )

@@ -16,6 +16,7 @@ namespace fm {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         std::optional<std::string> restoreToken;
+        bool cursorHidden = false;
     };
 
     class PortalScreenCast {
@@ -33,16 +34,20 @@ namespace fm {
         Result<int> openPipeWireRemote();
 
     public:
+        static constexpr std::uint32_t CURSOR_MODE_HIDDEN = 1;
+        static constexpr std::uint32_t CURSOR_MODE_EMBEDDED = 2;
+
         PortalScreenCast() = default;
         ~PortalScreenCast();
 
         PortalScreenCast(const PortalScreenCast&) = delete;
         PortalScreenCast& operator=(const PortalScreenCast&) = delete;
 
-        Result<ScreenCastStream> start(const std::optional<std::string>& restoreToken);
+        Result<ScreenCastStream> start(const std::optional<std::string>& restoreToken, bool hideCursor);
         void close();
 
         static std::string senderNameFromUniqueName(std::string_view uniqueName);
         static std::string requestPath(std::string_view senderName, std::string_view handleToken);
+        static std::uint32_t chooseCursorMode(std::uint32_t availableModes, bool hideCursor) noexcept;
     };
 }

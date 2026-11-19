@@ -73,12 +73,16 @@ namespace fm {
             reject(sessionId, RejectReason::NO_COMMON_CODEC, from, now);
             return;
         }
+        if ((hello.features & offer.requiredFeatures) != offer.requiredFeatures) {
+            reject(sessionId, RejectReason::MISSING_FEATURE, from, now);
+            return;
+        }
         while (!clients.empty() && clients.size() >= maxSessions) {
             endSession(0, SessionEndReason::REPLACED, true, now);
         }
 
         Client& client = clients.emplace_back();
-        client.session = Session{.peer = from, .sessionId = sessionId, .nextSeq = randomNumber()};
+        client.session = Session{.peer = from, .sessionId = sessionId, .seq = SequenceCounter(randomNumber())};
         client.peer.reset(from, now);
         client.peer.notePacket(from, hello.commonHeader.seq, packet.size(), now);
         client.reliableReceiver.shouldProcess(hello.controlHeader.msgId);
@@ -138,6 +142,14 @@ namespace fm {
                     client.keyframeRequested = true;
                 }
                 break;
+            case PacketType::SHAPE_REQUEST: {
+                ShapeRequest request;
+                request.read(packet);
+                if (client.streaming && (client.stream.features & FeatureFlags::CURSOR_OVERLAY) != 0) {
+                    client.requestedShape = request.shapeId;
+                }
+                break;
+            }
             case PacketType::STATS: {
                 Stats stats;
                 stats.read(packet);
@@ -160,9 +172,8 @@ namespace fm {
                 continue;
             }
             if (const auto due = client.reliableSender.due(now, RELIABLE_RESEND_INTERVAL); !due.empty()) {
-                restampHeader(due, client.session.nextSeq, toTimestampUs(now));
+                restampHeader(due, client.session.seq.next(), toTimestampUs(now));
                 transport.send(due, client.session.peer);
-                ++client.session.nextSeq;
             }
             if (now >= client.nextHeartbeatTime) {
                 sendHeartbeat(client, now);
@@ -181,6 +192,14 @@ namespace fm {
     bool HostSessions::takeKeyframeRequest() noexcept {
         Client* client = streamingClient();
         return client != nullptr && std::exchange(client->keyframeRequested, false);
+    }
+
+    std::optional<std::uint32_t> HostSessions::takeShapeRequest() noexcept {
+        Client* client = streamingClient();
+        if (client == nullptr || client->requestedShape == 0) {
+            return std::nullopt;
+        }
+        return std::exchange(client->requestedShape, 0);
     }
 
     void HostSessions::keyframeSent(std::chrono::steady_clock::time_point now) noexcept {
@@ -265,22 +284,21 @@ namespace fm {
         listener.sessionEnded(session.sessionId, reason);
     }
 
-    void HostSessions::sendPacket(Session& session, std::size_t size) noexcept {
+    void HostSessions::sendPacket(const Session& session, std::size_t size) noexcept {
         transport.send(std::span(sendBuffer).first(size), session.peer);
-        ++session.nextSeq;
     }
 
     void HostSessions::sendAck(Client& client, std::uint32_t msgId,
                                std::chrono::steady_clock::time_point now) noexcept {
         ACK packet;
         packet.ackedMsgId = msgId;
-        sendPacket(client.session, writeControlPacket(packet, client.session.sessionId, client.session.nextSeq,
+        sendPacket(client.session, writeControlPacket(packet, client.session.sessionId, client.session.seq.next(),
                                                       toTimestampUs(now), sendBuffer));
     }
 
     void HostSessions::sendHeartbeat(Client& client, std::chrono::steady_clock::time_point now) noexcept {
         sendPacket(client.session, writeControlPacket(client.heartbeatEcho.nextHeartbeat(now), client.session.sessionId,
-                                                      client.session.nextSeq, toTimestampUs(now), sendBuffer));
+                                                      client.session.seq.next(), toTimestampUs(now), sendBuffer));
     }
 
     void HostSessions::sendDueByes(std::chrono::steady_clock::time_point now) noexcept {
@@ -288,7 +306,7 @@ namespace fm {
             if (bye.remaining == 0 || now < bye.nextSendTime) {
                 continue;
             }
-            sendPacket(bye.session, writeControlPacket(Bye{}, bye.session.sessionId, bye.session.nextSeq,
+            sendPacket(bye.session, writeControlPacket(Bye{}, bye.session.sessionId, bye.session.seq.next(),
                                                        toTimestampUs(now), sendBuffer));
             --bye.remaining;
             bye.nextSendTime = now + BYE_REPEAT_INTERVAL;

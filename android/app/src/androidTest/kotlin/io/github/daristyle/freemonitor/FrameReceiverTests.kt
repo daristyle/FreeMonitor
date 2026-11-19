@@ -63,6 +63,42 @@ class FrameReceiverTests {
     }
 
     @Test
+    fun aCursorSentOverLoopbackComesOutAsStateAndShape() {
+        val port = DatagramSocket(ANY_FREE_PORT).use { it.localPort }
+        FrameReceiver.development(port).use { receiver ->
+            assertEquals(CursorState.EMPTY, receiver.cursorState())
+            DatagramSocket().use { sender ->
+                send(sender, port, cursorShape(SHAPE_ID, CURSOR_BGRA))
+                send(sender, port, cursorPosition(SHAPE_ID, CURSOR_X, CURSOR_Y))
+            }
+
+            val state = waitForCursor(receiver) { it.hasShape }
+            assertTrue(state.hasShape)
+            assertTrue(state.visible)
+            assertEquals(CURSOR_X, state.x)
+            assertEquals(CURSOR_Y, state.y)
+
+            val pixels = IntArray(CursorShapeInfo.MAX_PIXELS)
+            val shape = receiver.cursorShape(state, pixels)
+            assertTrue(shape.found)
+            assertEquals(CURSOR_SIDE, shape.width)
+            assertEquals(CURSOR_SIDE, shape.height)
+            assertEquals(HOTSPOT_X, shape.hotspotX)
+            assertEquals(HOTSPOT_Y, shape.hotspotY)
+            assertEquals(0x04030201, pixels[0])
+            assertEquals(0x08070605, pixels[1])
+        }
+    }
+
+    @Test
+    fun aClosedReceiverHasNoCursor() {
+        val receiver = FrameReceiver.development(ANY_FREE_PORT)
+        receiver.close()
+        assertEquals(CursorState.EMPTY, receiver.cursorState())
+        assertEquals(CursorShapeInfo.NONE, receiver.cursorShape(CursorState.EMPTY, IntArray(1)))
+    }
+
+    @Test
     fun closingTwiceIsHarmless() {
         val receiver = FrameReceiver.development(ANY_FREE_PORT)
         receiver.close()
@@ -100,6 +136,7 @@ class FrameReceiverTests {
                 assertEquals(SCREEN_HEIGHT, hello.getShort(HEIGHT_OFFSET).toInt() and U16_MASK)
                 assertEquals(REFRESH_HZ, hello.getShort(REFRESH_OFFSET).toInt() and U16_MASK)
                 assertEquals(BOTH_CODECS, hello.get(CODECS_OFFSET))
+                assertEquals(FEC_AND_CURSOR_OVERLAY, hello.get(FEATURES_OFFSET))
 
                 val status = waitForSessionStatus(receiver) { it.state == SessionState.CONNECTING }
                 assertEquals(hello.getInt(SESSION_ID_OFFSET).toLong() and U32_MASK, status.sessionId)
@@ -171,6 +208,72 @@ class FrameReceiverTests {
         }
     }
 
+    private fun waitForCursor(
+        receiver: FrameReceiver,
+        condition: (CursorState) -> Boolean,
+    ): CursorState {
+        val deadline = System.nanoTime() + LONG_TIMEOUT_MS * NANOSECONDS_PER_MILLISECOND
+        while (true) {
+            val state = receiver.cursorState()
+            if (condition(state) || System.nanoTime() >= deadline) {
+                return state
+            }
+            Thread.sleep(STATUS_POLL_MS)
+        }
+    }
+
+    private fun send(
+        sender: DatagramSocket,
+        port: Int,
+        packet: ByteArray,
+    ) {
+        sender.send(DatagramPacket(packet, packet.size, InetAddress.getByName(IPV4_LOOPBACK), port))
+    }
+
+    private fun cursorShape(
+        shapeId: Int,
+        bgra: ByteArray,
+    ): ByteArray =
+        commonHeader(CURSOR_SHAPE, FIRST_SEQ, CURSOR_HEADER_SIZE + bgra.size)
+            .putInt(shapeId)
+            .putShort(0)
+            .putShort(1)
+            .putShort(CURSOR_SIDE.toShort())
+            .putShort(CURSOR_SIDE.toShort())
+            .putShort(HOTSPOT_X.toShort())
+            .putShort(HOTSPOT_Y.toShort())
+            .put(bgra)
+            .array()
+
+    private fun cursorPosition(
+        shapeId: Int,
+        x: Int,
+        y: Int,
+    ): ByteArray =
+        commonHeader(CURSOR_POS, FIRST_SEQ + 1, CURSOR_HEADER_SIZE)
+            .putInt(shapeId)
+            .putInt(x)
+            .putInt(y)
+            .put(VISIBLE_FLAG)
+            .put(0)
+            .putShort(0)
+            .array()
+
+    private fun commonHeader(
+        type: Byte,
+        seq: Int,
+        size: Int,
+    ): ByteBuffer =
+        ByteBuffer
+            .allocate(size)
+            .putShort(MAGIC)
+            .put(PROTOCOL_VERSION)
+            .put(type)
+            .putInt(DEVELOPMENT_SESSION_ID)
+            .putInt(seq)
+            .putInt(0)
+            .putLong(nowUs())
+
     private fun videoFragment(
         frameId: Int,
         captureUs: Long,
@@ -236,6 +339,19 @@ class FrameReceiverTests {
         const val REFRESH_OFFSET = 36
         const val CODECS_OFFSET = 38
         const val BOTH_CODECS: Byte = 3
+        const val FEATURES_OFFSET = 39
+        const val FEC_AND_CURSOR_OVERLAY: Byte = 3
+        const val CURSOR_POS: Byte = 0x10
+        const val CURSOR_SHAPE: Byte = 0x11
+        const val CURSOR_HEADER_SIZE = 40
+        const val VISIBLE_FLAG: Byte = 1
+        const val SHAPE_ID = 7
+        const val CURSOR_SIDE = 2
+        const val HOTSPOT_X = 1
+        const val HOTSPOT_Y = 0
+        const val CURSOR_X = -3
+        const val CURSOR_Y = 500
+        val CURSOR_BGRA = ByteArray(CURSOR_SIDE * CURSOR_SIDE * 4) { (it + 1).toByte() }
         const val U16_MASK = 0xFFFF
         const val U32_MASK = 0xFFFF_FFFFL
     }

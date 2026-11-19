@@ -53,7 +53,7 @@ namespace fm {
 
     RestoreTokenStore::RestoreTokenStore(std::filesystem::path filePath) : filePath(std::move(filePath)) {}
 
-    Result<std::filesystem::path> RestoreTokenStore::defaultPath(std::string_view outputName) {
+    Result<std::filesystem::path> RestoreTokenStore::defaultPath(std::string_view outputName, bool hideCursor) {
         if (!isValidOutputName(outputName)) {
             return std::unexpected(
                     Error{ErrorCode::INVALID_ARGUMENT,
@@ -67,7 +67,11 @@ namespace fm {
         } else {
             return std::unexpected(Error{ErrorCode::NOT_SUPPORTED, "Neither XDG_STATE_HOME nor HOME is set"});
         }
-        return stateDirectory / "freemonitor" / ("restore-token-" + std::string(outputName));
+        std::string fileName = "restore-token-" + std::string(outputName);
+        if (hideCursor) {
+            fileName += ".hidden";
+        }
+        return stateDirectory / "freemonitor" / fileName;
     }
 
     std::optional<std::string> RestoreTokenStore::load() const {

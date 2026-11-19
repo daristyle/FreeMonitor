@@ -32,6 +32,7 @@ namespace fm {
         std::uint16_t fps = 0;
         std::uint8_t codecs = CodecFlags::JPEG;
         std::uint8_t features = 0;
+        std::uint8_t requiredFeatures = 0;
     };
 
     struct TabletReport {
@@ -80,6 +81,7 @@ namespace fm {
             std::optional<std::uint32_t> welcomeMsgId;
             bool streaming = false;
             bool keyframeRequested = false;
+            std::uint32_t requestedShape = 0;
             std::optional<std::chrono::steady_clock::time_point> lastKeyframeTime;
             std::chrono::steady_clock::time_point nextHeartbeatTime{};
             HeartbeatEcho heartbeatEcho;
@@ -113,7 +115,7 @@ namespace fm {
                     std::chrono::steady_clock::time_point now) noexcept;
         void endSession(std::size_t clientIndex, SessionEndReason reason, bool sendBye,
                         std::chrono::steady_clock::time_point now) noexcept;
-        void sendPacket(Session& session, std::size_t size) noexcept;
+        void sendPacket(const Session& session, std::size_t size) noexcept;
         void sendAck(Client& client, std::uint32_t msgId, std::chrono::steady_clock::time_point now) noexcept;
         void sendHeartbeat(Client& client, std::chrono::steady_clock::time_point now) noexcept;
         void sendDueByes(std::chrono::steady_clock::time_point now) noexcept;
@@ -132,6 +134,7 @@ namespace fm {
 
         Session* streamingSession() noexcept;
         bool takeKeyframeRequest() noexcept;
+        std::optional<std::uint32_t> takeShapeRequest() noexcept;
         void keyframeSent(std::chrono::steady_clock::time_point now) noexcept;
         std::optional<TabletReport> report() const noexcept;
 

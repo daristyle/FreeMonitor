@@ -187,6 +187,7 @@ TEST_CASE("create removes a leftover output, places the display right of the lay
     CHECK(target->outputName == OUTPUT_NAME);
     CHECK(target->width == TABLET_MODE.width);
     CHECK(target->height == TABLET_MODE.height);
+    CHECK(target->cursorInPicture);
     CHECK(server.receivedRequests() == CREATE_REQUESTS);
 }
 

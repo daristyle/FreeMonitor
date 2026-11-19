@@ -137,3 +137,9 @@ TEST_CASE("repeatLastFrame hands out the last frame again with its pixels and ca
     checkPixel(frame, 3, 2, 1);
     captureSource.releaseFrame();
 }
+
+TEST_CASE("the stub capture never draws a cursor, so it reports the cursor as hidden") {
+    fm::StubCaptureSource captureSource;
+    REQUIRE(captureSource.start(TEST_TARGET));
+    CHECK(captureSource.cursorHidden());
+}

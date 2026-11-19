@@ -8,6 +8,11 @@ namespace fm {
         bool isValidHeader(const CommonHeader& header) noexcept {
             return header.magic == MAGIC && header.version == PROTOCOL_VERSION && header.headerReserved == 0;
         }
+
+        bool isCursorPacket(const CommonHeader& header) noexcept {
+            return header.type == static_cast<std::uint8_t>(PacketType::CURSOR_POS) ||
+                   header.type == static_cast<std::uint8_t>(PacketType::CURSOR_SHAPE);
+        }
     }
 
     FrameReceiver::FrameReceiver(UDPSocket udpSocket, std::uint32_t sessionId,
@@ -120,6 +125,15 @@ namespace fm {
         return status;
     }
 
+    std::uint64_t FrameReceiver::cursorSnapshot() const noexcept {
+        return cursorReceiver.snapshot();
+    }
+
+    std::optional<CursorShapeInfo> FrameReceiver::copyCursorShape(std::uint64_t snapshot,
+                                                                  std::span<std::uint32_t> argbPixels) const noexcept {
+        return cursorReceiver.copyShape(snapshot, argbPixels);
+    }
+
     void FrameReceiver::run() noexcept {
         Endpoint from;
         const auto pollInterval = session ? SESSION_POLL_INTERVAL : RECEIVE_POLL_INTERVAL;
@@ -178,6 +192,14 @@ namespace fm {
             return;
         }
         const std::uint32_t expectedSessionId = session ? session->sessionId() : sessionId;
+        if (isCursorPacket(header)) {
+            if (header.sessionId != expectedSessionId || !cursorOverlayOn()) {
+                ignoredPackets.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            handleCursor(header, packet, arrival);
+            return;
+        }
         const bool parityPacket = header.type == static_cast<std::uint8_t>(PacketType::VIDEO_PARITY) && session &&
                                   (session->stream().features & FeatureFlags::FEC) != 0;
         if ((header.type != static_cast<std::uint8_t>(PacketType::VIDEO_FRAGMENT) && !parityPacket) ||
@@ -198,6 +220,7 @@ namespace fm {
         FragmentStatus status = reassembler.accept(fragment, arrival);
         if (status == FragmentStatus::TOO_OLD && arrival - lastCompletion >= senderRestartTimeout) {
             resetReassembler();
+            cursorReceiver.reset();
             senderRestarts.fetch_add(1, std::memory_order_relaxed);
             lastCompletion = arrival;
             status = reassembler.accept(fragment, arrival);
@@ -213,6 +236,27 @@ namespace fm {
             return;
         }
         noteFragmentStatus(reassembler.accept(parity, arrival), arrival);
+    }
+
+    bool FrameReceiver::cursorOverlayOn() const noexcept {
+        return !session || (session->stream().features & FeatureFlags::CURSOR_OVERLAY) != 0;
+    }
+
+    void FrameReceiver::handleCursor(const CommonHeader& header, std::span<const std::uint8_t> packet,
+                                     std::chrono::steady_clock::time_point arrival) noexcept {
+        if (header.type == static_cast<std::uint8_t>(PacketType::CURSOR_POS)) {
+            CursorPos position;
+            if (!position.read(packet)) {
+                invalidPackets.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            cursorReceiver.acceptPosition(position);
+            return;
+        }
+        CursorShape fragment;
+        if (!fragment.read(packet) || !cursorReceiver.acceptShapeFragment(fragment, arrival)) {
+            invalidPackets.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     void FrameReceiver::noteFragmentStatus(FragmentStatus status,
@@ -274,10 +318,18 @@ namespace fm {
             session->start(now);
         }
         session->poll(now);
+        const TabletState stateAfterPoll = session->state();
         if (session->sessionCount() != lastSessionCount) {
             lastSessionCount = session->sessionCount();
             resetReassembler();
             lastCompletion = now;
+            cursorReceiver.reset();
+        } else if (stateAfterPoll != TabletState::CONNECTED && lastSessionState == TabletState::CONNECTED) {
+            cursorReceiver.reset();
+        }
+        lastSessionState = stateAfterPoll;
+        if (const auto shapeId = cursorReceiver.takeShapeRequest(now)) {
+            session->sendShapeRequest(*shapeId, now);
         }
         publishSessionStatus();
     }

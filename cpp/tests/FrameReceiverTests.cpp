@@ -1,4 +1,5 @@
 #include "ControlTestHelpers.hpp"
+#include "CursorPackets.hpp"
 #include "Fragmenter.hpp"
 #include "FrameReceiver.hpp"
 #include "HostSessions.hpp"
@@ -70,7 +71,7 @@ namespace {
 
         Sender(const fm::Endpoint& destination, std::uint32_t firstFrameId, std::uint32_t sessionId = 0)
             : videoSender(udpSocket, firstFrameId),
-              session{.peer = destination, .sessionId = sessionId, .nextSeq = 77} {}
+              session{.peer = destination, .sessionId = sessionId, .seq = fm::SequenceCounter(77)} {}
 
         void send(const std::vector<std::uint8_t>& data, bool keyframe = true) {
             REQUIRE(videoSender.send(makeEncodedFrame(data, keyframe), fm::Codec::JPEG, session).status ==
@@ -87,7 +88,45 @@ namespace {
     constexpr fm::HostOffer OFFER{.width = 2944, .height = 1840, .fps = 60, .codecs = BOTH_CODECS, .features = 0};
     constexpr fm::HostOffer FEC_OFFER{
             .width = 2944, .height = 1840, .fps = 60, .codecs = BOTH_CODECS, .features = fm::FeatureFlags::FEC};
+    constexpr fm::HostOffer CURSOR_OFFER{.width = 2944,
+                                         .height = 1840,
+                                         .fps = 60,
+                                         .codecs = BOTH_CODECS,
+                                         .features = fm::FeatureFlags::CURSOR_OVERLAY,
+                                         .requiredFeatures = fm::FeatureFlags::CURSOR_OVERLAY};
     constexpr std::uint32_t FIRST_FRAME_ID = 1000;
+
+    fm::CursorImage cursorImage() {
+        fm::CursorImage image{.width = 24,
+                              .height = 24,
+                              .hotspotX = 5,
+                              .hotspotY = 1,
+                              .pixels = std::vector<std::uint8_t>(24 * 24 * 4)};
+        for (std::size_t i = 0; i < image.pixels.size(); ++i) {
+            image.pixels[i] = static_cast<std::uint8_t>(i * 3);
+        }
+        return image;
+    }
+
+    void sendCursor(fm::UDPSocket& udpSocket, const fm::Endpoint& to, std::uint32_t sessionId, fm::SequenceCounter& seq,
+                    std::uint32_t shapeId, bool withShape, std::int32_t x) {
+        std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
+        if (withShape) {
+            const fm::CursorImage image = cursorImage();
+            for (std::uint16_t index = 0; index < fm::cursorShapeFragmentCount(image); ++index) {
+                const std::size_t size =
+                        fm::writeCursorShapeFragment(image, shapeId, index, sessionId, seq.next(), 1, packet);
+                REQUIRE(udpSocket.sendTo(std::span(packet).first(size), to) == fm::SendStatus::SENT);
+            }
+        }
+        const fm::CursorState state{.x = x, .y = 200, .visible = true, .imageId = shapeId};
+        const std::size_t size = fm::writeCursorPos(state, sessionId, seq.next(), 1, packet);
+        REQUIRE(udpSocket.sendTo(std::span(packet).first(size), to) == fm::SendStatus::SENT);
+    }
+
+    fm::CursorSnapshot cursorOf(const fm::FrameReceiver& receiver) {
+        return fm::CursorSnapshot::unpack(receiver.cursorSnapshot());
+    }
 
     std::unique_ptr<fm::FrameReceiver> openSessionReceiver(const fm::TabletSettings& settings) {
         auto receiver = fm::FrameReceiver::openSession(settings);
@@ -173,13 +212,14 @@ namespace {
             std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
             for (std::uint16_t index = 0; index < fragmenter.fragmentCount(); ++index) {
                 if (index != lostFragment) {
-                    const std::size_t size = fragmenter.write(index, session->sessionId, session->nextSeq++, 1, packet);
+                    const std::size_t size =
+                            fragmenter.write(index, session->sessionId, session->seq.next(), 1, packet);
                     REQUIRE(udpSocket.sendTo(std::span(packet).first(size), session->peer) == fm::SendStatus::SENT);
                 }
             }
             for (std::uint16_t index = 0; index < parityCount; ++index) {
                 const std::size_t size =
-                        fragmenter.writeParity(index, parityCount, session->sessionId, session->nextSeq++, 1, packet);
+                        fragmenter.writeParity(index, parityCount, session->sessionId, session->seq.next(), 1, packet);
                 REQUIRE(udpSocket.sendTo(std::span(packet).first(size), session->peer) == fm::SendStatus::SENT);
             }
         }
@@ -192,7 +232,7 @@ namespace {
             REQUIRE(fragmenter.fragmentCount() > 1);
             std::array<std::uint8_t, fm::MAX_PACKET_SIZE> packet{};
             for (std::uint16_t index = 0; index + 1 < fragmenter.fragmentCount(); ++index) {
-                const std::size_t size = fragmenter.write(index, session->sessionId, session->nextSeq++, 1, packet);
+                const std::size_t size = fragmenter.write(index, session->sessionId, session->seq.next(), 1, packet);
                 REQUIRE(udpSocket.sendTo(std::span(packet).first(size), session->peer) == fm::SendStatus::SENT);
             }
         }
@@ -560,4 +600,57 @@ TEST_CASE("parity in development mode is ignored") {
 
     REQUIRE(waitUntil([&] { return receiver->statistics().ignoredPackets == 1; }));
     CHECK(receiver->statistics().framesCompleted == 0);
+}
+
+TEST_CASE("development mode draws the cursor from cursor packets of session 0") {
+    auto receiver = openReceiver();
+    receiver->start();
+    Sender sender(endpointOf(*receiver), 900);
+    sendCursor(sender.udpSocket, endpointOf(*receiver), DEVELOPMENT_SESSION_ID, sender.session.seq, 1, true, 100);
+    REQUIRE(waitUntil([&] { return cursorOf(*receiver).visible; }));
+    CHECK(cursorOf(*receiver).x == 100);
+    CHECK(cursorOf(*receiver).y == 200);
+    std::vector<std::uint32_t> pixels(fm::CursorShapeCache::MAX_PIXELS);
+    CHECK(receiver->copyCursorShape(receiver->cursorSnapshot(), pixels) ==
+          fm::CursorShapeInfo{.width = 24, .height = 24, .hotspotX = 5, .hotspotY = 1});
+
+    sendCursor(sender.udpSocket, endpointOf(*receiver), 7, sender.session.seq, 1, false, 300);
+    REQUIRE(waitUntil([&] { return receiver->statistics().ignoredPackets == 1; }));
+    CHECK(cursorOf(*receiver).x == 100);
+}
+
+TEST_CASE("a session with the cursor overlay draws the host's cursor and asks again for a lost shape") {
+    TestHost host(CURSOR_OFFER);
+    fm::TabletSettings settings = host.settings();
+    settings.features = fm::FeatureFlags::CURSOR_OVERLAY;
+    auto receiver = openSessionReceiver(settings);
+    receiver->start();
+    host.connect(*receiver);
+    fm::Session* session = host.sessions.streamingSession();
+    REQUIRE(session != nullptr);
+
+    sendCursor(host.udpSocket, session->peer, session->sessionId, session->seq, 1, true, 100);
+    REQUIRE(host.pumpUntil([&] { return cursorOf(*receiver).visible; }));
+
+    sendCursor(host.udpSocket, session->peer, session->sessionId, session->seq, 2, false, 101);
+    REQUIRE(host.pumpUntil([&] { return host.sessions.takeShapeRequest() == 2U; }));
+    CHECK(cursorOf(*receiver).x == 101);
+    CHECK(cursorOf(*receiver).visible);
+
+    host.sessions.close(std::chrono::steady_clock::now());
+    REQUIRE(host.pumpUntil([&] { return !cursorOf(*receiver).visible; }));
+    CHECK(cursorOf(*receiver) == fm::CursorSnapshot{});
+}
+
+TEST_CASE("a session without the cursor overlay ignores cursor packets") {
+    TestHost host;
+    auto receiver = openSessionReceiver(host.settings());
+    receiver->start();
+    host.connect(*receiver);
+    fm::Session* session = host.sessions.streamingSession();
+    REQUIRE(session != nullptr);
+
+    sendCursor(host.udpSocket, session->peer, session->sessionId, session->seq, 1, true, 100);
+    REQUIRE(host.pumpUntil([&] { return receiver->statistics().ignoredPackets == 3; }));
+    CHECK(cursorOf(*receiver) == fm::CursorSnapshot{});
 }

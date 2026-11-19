@@ -18,3 +18,16 @@ TEST_CASE("a portal that was never started can be closed and destroyed safely") 
     portal.close();
     portal.close();
 }
+
+TEST_CASE(
+        "the portal cursor mode follows the wish, and never leaves the cursor out unasked when embedding is offered") {
+    constexpr std::uint32_t HIDDEN = fm::PortalScreenCast::CURSOR_MODE_HIDDEN;
+    constexpr std::uint32_t EMBEDDED = fm::PortalScreenCast::CURSOR_MODE_EMBEDDED;
+    constexpr std::uint32_t METADATA = 4;
+    CHECK(fm::PortalScreenCast::chooseCursorMode(HIDDEN | EMBEDDED, true) == HIDDEN);
+    CHECK(fm::PortalScreenCast::chooseCursorMode(HIDDEN | EMBEDDED, false) == EMBEDDED);
+    CHECK(fm::PortalScreenCast::chooseCursorMode(HIDDEN | EMBEDDED | METADATA, true) == HIDDEN);
+    CHECK(fm::PortalScreenCast::chooseCursorMode(EMBEDDED, true) == EMBEDDED);
+    CHECK(fm::PortalScreenCast::chooseCursorMode(HIDDEN, false) == HIDDEN);
+    CHECK(fm::PortalScreenCast::chooseCursorMode(0, false) == HIDDEN);
+}

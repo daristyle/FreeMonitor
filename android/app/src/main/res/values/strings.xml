@@ -15,5 +15,6 @@
     <string name="reject_unsupported_version">it speaks another protocol version</string>
     <string name="reject_no_common_codec">no video codec in common</string>
     <string name="reject_invalid_parameters">the tablet sent invalid screen settings</string>
+    <string name="reject_missing_feature">this app lacks a feature the host needs. Update the app</string>
     <string name="reject_unknown">unknown reason</string>
 </resources>

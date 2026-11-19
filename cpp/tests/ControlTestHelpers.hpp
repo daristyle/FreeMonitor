@@ -144,6 +144,14 @@ inline std::vector<std::uint8_t> keyframeRequestPacket(std::uint32_t sessionId, 
     return bytes;
 }
 
+inline std::vector<std::uint8_t> shapeRequestPacket(std::uint32_t sessionId, std::uint32_t seq, std::uint32_t shapeId) {
+    fm::ShapeRequest request;
+    request.shapeId = shapeId;
+    std::vector<std::uint8_t> bytes(fm::ShapeRequest::SIZE);
+    fm::writeControlPacket(request, sessionId, seq, 1, bytes);
+    return bytes;
+}
+
 inline std::vector<std::uint8_t> statsPacket(std::uint32_t sessionId, std::uint32_t seq, std::uint32_t packetsReceived,
                                              std::uint32_t packetsLost) {
     fm::Stats stats;

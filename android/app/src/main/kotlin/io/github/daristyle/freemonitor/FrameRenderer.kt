@@ -23,6 +23,7 @@ class FrameRenderer(
     private val destination = Rect()
     private val keyframeGate = KeyframeGate()
     private var bitmap: Bitmap? = null
+    private var jpegSize: VideoSize? = null
     private var codec: Codec? = null
     private var h264Decoder: H264Decoder? = null
     private var codecChangeReported = false
@@ -134,6 +135,9 @@ class FrameRenderer(
         val decodeStartUs = nowUs()
         val decoded = decode(length)
         val decodeEndUs = nowUs()
+        if (decoded != null) {
+            reportJPEGSize(decoded.width, decoded.height)
+        }
         val posted = decoded != null && drawFrame(decoded)
         val postUs = if (posted) nowUs() else 0L
         val outcome =
@@ -144,6 +148,19 @@ class FrameRenderer(
             }
         timingLog?.record(frameInfo, outcome, acquireUs, decodeStartUs, decodeEndUs, postUs)
         return posted
+    }
+
+    private fun reportJPEGSize(
+        width: Int,
+        height: Int,
+    ) {
+        val reported = jpegSize
+        if (reported != null && reported.width == width && reported.height == height) {
+            return
+        }
+        val size = VideoSize(width, height)
+        jpegSize = size
+        onVideoSize(size)
     }
 
     private fun drawFrame(decoded: Bitmap): Boolean {

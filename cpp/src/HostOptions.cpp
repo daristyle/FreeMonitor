@@ -27,6 +27,12 @@ namespace fm {
                 {"jpeg", EncoderChoice::JPEG},
         }};
 
+        constexpr std::array<std::pair<std::string_view, CursorChoice>, 3> NAMED_CURSOR_CHOICES{{
+                {"auto", CursorChoice::AUTO},
+                {"overlay", CursorChoice::OVERLAY},
+                {"embedded", CursorChoice::EMBEDDED},
+        }};
+
         std::optional<std::uint32_t> parseNumber(std::string_view text, std::uint32_t maximum) {
             std::uint32_t value = 0;
             const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
@@ -94,6 +100,15 @@ namespace fm {
             }
             return std::nullopt;
         }
+
+        std::optional<CursorChoice> parseCursorChoice(std::string_view text) {
+            for (const auto& [name, choice] : NAMED_CURSOR_CHOICES) {
+                if (text == name) {
+                    return choice;
+                }
+            }
+            return std::nullopt;
+        }
     }
 
     Result<HostOptions> parseHostOptions(std::span<const std::string_view> arguments, bool developmentModeAllowed) {
@@ -102,7 +117,7 @@ namespace fm {
             const std::string_view option = arguments[i];
             if (option != "--seconds" && option != "--quality" && option != "--destination" && option != "--size" &&
                 option != "--refresh" && option != "--position" && option != "--timing-log" && option != "--encoder" &&
-                option != "--bitrate" && option != "--fec") {
+                option != "--bitrate" && option != "--fec" && option != "--cursor") {
                 return invalidOption("Unknown option " + std::string(option));
             }
             if (i + 1 >= arguments.size()) {
@@ -159,6 +174,12 @@ namespace fm {
                     return invalidOption("--fec must be 0 to 100 percent");
                 }
                 options.fecPercent = static_cast<std::uint8_t>(*percent);
+            } else if (option == "--cursor") {
+                const auto choice = parseCursorChoice(value);
+                if (!choice) {
+                    return invalidOption("--cursor must be auto, overlay or embedded");
+                }
+                options.cursor = *choice;
             } else {
                 if (!developmentModeAllowed) {
                     return invalidOption("--destination is development mode, which a release build does not have");

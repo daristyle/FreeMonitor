@@ -70,7 +70,7 @@ namespace fm {
         bool acceptWelcome(const Welcome& welcome) const noexcept;
         void handleControl(PacketType type, std::span<const std::uint8_t> packet,
                            std::chrono::steady_clock::time_point now) noexcept;
-        void sendPacket(Session& target, std::size_t size) noexcept;
+        void sendPacket(const Session& target, std::size_t size) noexcept;
         void sendAck(std::uint32_t msgId, std::chrono::steady_clock::time_point now) noexcept;
         void sendKeyframeRequest(std::chrono::steady_clock::time_point now) noexcept;
         void sendStats(std::chrono::steady_clock::time_point now) noexcept;
@@ -91,6 +91,7 @@ namespace fm {
         bool closing() const noexcept;
 
         void requestKeyframe(std::chrono::steady_clock::time_point now) noexcept;
+        void sendShapeRequest(std::uint32_t shapeId, std::chrono::steady_clock::time_point now) noexcept;
         void keyframeReceived() noexcept;
         void frameCompleted() noexcept;
         void frameDropped() noexcept;

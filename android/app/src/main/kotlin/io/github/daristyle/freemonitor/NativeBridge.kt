@@ -43,5 +43,15 @@ object NativeBridge {
     external fun sessionStatus(handle: Long): LongArray
 
     @JvmStatic
+    external fun cursorState(handle: Long): Long
+
+    @JvmStatic
+    external fun cursorShape(
+        handle: Long,
+        state: Long,
+        pixels: IntArray,
+    ): Long
+
+    @JvmStatic
     external fun destroyReceiver(handle: Long)
 }

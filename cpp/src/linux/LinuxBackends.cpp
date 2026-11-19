@@ -6,6 +6,7 @@
 #include "linux/PipeWireCaptureSource.hpp"
 #include "linux/VAAPIDevices.hpp"
 #include "linux/VAAPIEncoder.hpp"
+#include "linux/WaylandCursorSource.hpp"
 #include "stub/StubVirtualDisplay.hpp"
 
 #include <string>
@@ -45,5 +46,9 @@ namespace fm {
                                                             std::string(HyprlandVirtualDisplay::DEFAULT_OUTPUT_NAME));
         }
         return std::make_unique<StubVirtualDisplay>();
+    }
+
+    std::unique_ptr<CursorSource> createCursorSource() {
+        return std::make_unique<WaylandCursorSource>();
     }
 }

@@ -117,35 +117,35 @@ TEST_CASE("save fails when the directory cannot be created") {
 TEST_CASE("defaultPath follows XDG_STATE_HOME, then HOME") {
     SECTION("XDG_STATE_HOME set") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", "/tmp/state-home");
-        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
+        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", false);
         REQUIRE(path);
         CHECK(*path == "/tmp/state-home/freemonitor/restore-token-FREEMONITOR-1");
     }
     SECTION("only HOME set") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", nullptr);
         const ScopedEnvironment home("HOME", "/home/someone");
-        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
+        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", false);
         REQUIRE(path);
         CHECK(*path == "/home/someone/.local/state/freemonitor/restore-token-FREEMONITOR-1");
     }
     SECTION("relative XDG_STATE_HOME is ignored, as the XDG spec requires") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", "relative/path");
         const ScopedEnvironment home("HOME", "/home/someone");
-        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
+        const auto path = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", false);
         REQUIRE(path);
         CHECK(*path == "/home/someone/.local/state/freemonitor/restore-token-FREEMONITOR-1");
     }
     SECTION("neither set") {
         const ScopedEnvironment stateHome("XDG_STATE_HOME", nullptr);
         const ScopedEnvironment home("HOME", nullptr);
-        CHECK_FALSE(fm::RestoreTokenStore::defaultPath("FREEMONITOR-1"));
+        CHECK_FALSE(fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", false));
     }
 }
 
 TEST_CASE("defaultPath keeps one token per output and rejects names that are not plain file names") {
     const ScopedEnvironment stateHome("XDG_STATE_HOME", "/tmp/state-home");
-    const auto first = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1");
-    const auto second = fm::RestoreTokenStore::defaultPath("eDP_1");
+    const auto first = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", false);
+    const auto second = fm::RestoreTokenStore::defaultPath("eDP_1", false);
     REQUIRE(first);
     REQUIRE(second);
     CHECK(*first != *second);
@@ -153,8 +153,23 @@ TEST_CASE("defaultPath keeps one token per output and rejects names that are not
 
     for (const char* name : {"", ".", "..", "../x", "a/b", "a b", "a,b"}) {
         CAPTURE(name);
-        const auto path = fm::RestoreTokenStore::defaultPath(name);
+        const auto path = fm::RestoreTokenStore::defaultPath(name, false);
         REQUIRE_FALSE(path);
         CHECK(path.error().code == fm::ErrorCode::INVALID_ARGUMENT);
+    }
+}
+
+TEST_CASE("defaultPath keeps a separate token for capture without the cursor, because the portal restores the cursor "
+          "mode from the token") {
+    const ScopedEnvironment stateHome("XDG_STATE_HOME", "/tmp/state-home");
+    const auto embedded = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", false);
+    const auto hidden = fm::RestoreTokenStore::defaultPath("FREEMONITOR-1", true);
+    REQUIRE(embedded);
+    REQUIRE(hidden);
+    CHECK(*embedded == "/tmp/state-home/freemonitor/restore-token-FREEMONITOR-1");
+    CHECK(*hidden == "/tmp/state-home/freemonitor/restore-token-FREEMONITOR-1.hidden");
+
+    SECTION("no output name can produce the hidden file name of another output") {
+        CHECK_FALSE(fm::RestoreTokenStore::defaultPath("FREEMONITOR-1.hidden", false));
     }
 }

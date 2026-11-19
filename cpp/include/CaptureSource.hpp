@@ -13,6 +13,8 @@ namespace fm {
         std::string outputName;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
+        bool hideCursor = false;
+        bool cursorInPicture = false;
     };
 
     enum class CaptureStatus : std::uint8_t {
@@ -36,6 +38,7 @@ namespace fm {
         virtual CaptureStatus acquireFrame(CapturedFrame& frame, std::chrono::milliseconds timeout) noexcept = 0;
         virtual CaptureStatus repeatLastFrame(CapturedFrame& frame) noexcept = 0;
         virtual void releaseFrame() noexcept = 0;
+        virtual bool cursorHidden() const noexcept = 0;
     };
 
     std::unique_ptr<CaptureSource> createCaptureSource();

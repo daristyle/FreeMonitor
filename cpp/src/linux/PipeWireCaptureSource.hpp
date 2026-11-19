@@ -16,6 +16,7 @@ namespace fm {
         std::unique_ptr<PortalScreenCast> portal;
         std::unique_ptr<PipeWireStream> stream;
         bool started = false;
+        bool hidesCursor = false;
 
         Result<> connectStream(int pipeWireDescriptor, std::uint32_t nodeId);
         void disconnectStream();
@@ -31,5 +32,6 @@ namespace fm {
         CaptureStatus acquireFrame(CapturedFrame& frame, std::chrono::milliseconds timeout) noexcept override;
         CaptureStatus repeatLastFrame(CapturedFrame& frame) noexcept override;
         void releaseFrame() noexcept override;
+        bool cursorHidden() const noexcept override;
     };
 }

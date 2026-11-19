@@ -21,7 +21,7 @@ namespace fm {
         const std::uint16_t fragmentCount = fragmenter.fragmentCount();
         for (std::uint16_t fragIndex = 0; fragIndex < fragmentCount; ++fragIndex) {
             const std::size_t packetSize =
-                    fragmenter.write(fragIndex, session.sessionId, session.nextSeq,
+                    fragmenter.write(fragIndex, session.sessionId, session.seq.next(),
                                      toTimestampUs(std::chrono::steady_clock::now()), packetBuffer);
             if (packetSize == 0) {
                 result.status = FrameSendStatus::SEND_FAILED;
@@ -35,7 +35,6 @@ namespace fm {
                                                                       : FrameSendStatus::SEND_FAILED;
                 return result;
             }
-            ++session.nextSeq;
             ++result.packetsSent;
             result.bytesSent += packetSize;
         }
@@ -50,13 +49,12 @@ namespace fm {
         const std::uint16_t parityCount = fecParityCount(fragmenter.fragmentCount(), percent);
         for (std::uint16_t parityIndex = 0; parityIndex < parityCount; ++parityIndex) {
             const std::size_t packetSize =
-                    fragmenter.writeParity(parityIndex, parityCount, session.sessionId, session.nextSeq,
+                    fragmenter.writeParity(parityIndex, parityCount, session.sessionId, session.seq.next(),
                                            toTimestampUs(std::chrono::steady_clock::now()), packetBuffer);
             if (packetSize == 0 || udpSocket.sendTo(std::span<const std::uint8_t>(packetBuffer).first(packetSize),
                                                     session.peer) != SendStatus::SENT) {
                 return result;
             }
-            ++session.nextSeq;
             ++result.packetsSent;
             result.bytesSent += packetSize;
         }
