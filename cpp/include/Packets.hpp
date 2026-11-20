@@ -26,14 +26,19 @@ namespace fm {
     constexpr std::uint32_t SHAPE_REQUEST_REPEAT_INTERVAL_MS = 500;
     constexpr std::uint32_t STATS_INTERVAL_MS = 1000;
     constexpr std::uint32_t DEVELOPMENT_KEYFRAME_INTERVAL_MS = 1000;
+    constexpr std::uint32_t DISCOVER_REPEAT_INTERVAL_MS = 250;
+    constexpr std::uint32_t DISCOVERY_TIME_MS = 1000;
     constexpr std::uint32_t MAX_INCOMPLETE_FRAMES = 4;
     constexpr std::uint32_t MIN_SHAPE_CACHE_SIZE = 16;
     constexpr std::uint32_t BYE_REPEAT_COUNT = 3;
     constexpr std::uint32_t MAX_FEC_GROUP_SIZE = 32;
     constexpr std::uint32_t MAX_FEC_GROUP_PARITY = 16;
+    constexpr std::uint32_t MAX_ANNOUNCES_PER_SECOND = 20;
+    constexpr std::uint32_t MAX_HOST_NAME_SIZE = 64;
     constexpr std::uint32_t MAX_FRAGMENT_PAYLOAD = 1352;
     constexpr std::uint32_t MAX_PARITY_PAYLOAD = 1352;
     constexpr std::uint32_t MAX_SHAPE_PAYLOAD = 1360;
+    constexpr std::uint32_t MAX_ANNOUNCE_PAYLOAD = 1368;
 
     enum class PacketType : std::uint8_t {
         VIDEO_FRAGMENT = 0x01,
@@ -49,6 +54,8 @@ namespace fm {
         STATS = 0x26,
         BYE = 0x27,
         REJECT = 0x28,
+        DISCOVER = 0x30,
+        ANNOUNCE = 0x31,
     };
 
     enum class Codec : std::uint8_t {
@@ -824,6 +831,93 @@ namespace fm {
             reason = readBigEndian<std::uint8_t>(source + 32);
             version = readBigEndian<std::uint8_t>(source + 33);
             reserved = readBigEndian<std::uint16_t>(source + 34);
+            return true;
+        }
+    };
+
+    struct Discover {
+        static constexpr std::size_t SIZE = 28;
+
+        CommonHeader commonHeader = makeCommonHeader(PacketType::DISCOVER);
+        std::uint32_t nonce = 0;
+
+        std::size_t write(std::span<std::uint8_t> buffer) const noexcept {
+            if (buffer.size() < SIZE) {
+                return 0;
+            }
+            std::uint8_t* destination = buffer.data();
+            writeBigEndian(destination, commonHeader.magic);
+            writeBigEndian(destination + 2, commonHeader.version);
+            writeBigEndian(destination + 3, commonHeader.type);
+            writeBigEndian(destination + 4, commonHeader.sessionId);
+            writeBigEndian(destination + 8, commonHeader.seq);
+            writeBigEndian(destination + 12, commonHeader.headerReserved);
+            writeBigEndian(destination + 16, commonHeader.timestampUs);
+            writeBigEndian(destination + 24, nonce);
+            return SIZE;
+        }
+
+        bool read(std::span<const std::uint8_t> buffer) noexcept {
+            if (buffer.size() < SIZE) {
+                return false;
+            }
+            const std::uint8_t* source = buffer.data();
+            commonHeader.magic = readBigEndian<std::uint16_t>(source);
+            commonHeader.version = readBigEndian<std::uint8_t>(source + 2);
+            commonHeader.type = readBigEndian<std::uint8_t>(source + 3);
+            commonHeader.sessionId = readBigEndian<std::uint32_t>(source + 4);
+            commonHeader.seq = readBigEndian<std::uint32_t>(source + 8);
+            commonHeader.headerReserved = readBigEndian<std::uint32_t>(source + 12);
+            commonHeader.timestampUs = readBigEndian<std::uint64_t>(source + 16);
+            nonce = readBigEndian<std::uint32_t>(source + 24);
+            return true;
+        }
+    };
+
+    struct Announce {
+        static constexpr std::size_t SIZE = 32;
+
+        CommonHeader commonHeader = makeCommonHeader(PacketType::ANNOUNCE);
+        std::uint32_t nonce = 0;
+        std::uint16_t port = 0;
+        std::uint16_t reserved = 0;
+        std::span<const std::uint8_t> payload;
+
+        std::size_t write(std::span<std::uint8_t> buffer) const noexcept {
+            if (buffer.size() < SIZE || buffer.size() - SIZE < payload.size()) {
+                return 0;
+            }
+            std::uint8_t* destination = buffer.data();
+            writeBigEndian(destination, commonHeader.magic);
+            writeBigEndian(destination + 2, commonHeader.version);
+            writeBigEndian(destination + 3, commonHeader.type);
+            writeBigEndian(destination + 4, commonHeader.sessionId);
+            writeBigEndian(destination + 8, commonHeader.seq);
+            writeBigEndian(destination + 12, commonHeader.headerReserved);
+            writeBigEndian(destination + 16, commonHeader.timestampUs);
+            writeBigEndian(destination + 24, nonce);
+            writeBigEndian(destination + 28, port);
+            writeBigEndian(destination + 30, reserved);
+            std::ranges::copy(payload, destination + SIZE);
+            return SIZE + payload.size();
+        }
+
+        bool read(std::span<const std::uint8_t> buffer) noexcept {
+            if (buffer.size() < SIZE) {
+                return false;
+            }
+            const std::uint8_t* source = buffer.data();
+            commonHeader.magic = readBigEndian<std::uint16_t>(source);
+            commonHeader.version = readBigEndian<std::uint8_t>(source + 2);
+            commonHeader.type = readBigEndian<std::uint8_t>(source + 3);
+            commonHeader.sessionId = readBigEndian<std::uint32_t>(source + 4);
+            commonHeader.seq = readBigEndian<std::uint32_t>(source + 8);
+            commonHeader.headerReserved = readBigEndian<std::uint32_t>(source + 12);
+            commonHeader.timestampUs = readBigEndian<std::uint64_t>(source + 16);
+            nonce = readBigEndian<std::uint32_t>(source + 24);
+            port = readBigEndian<std::uint16_t>(source + 28);
+            reserved = readBigEndian<std::uint16_t>(source + 30);
+            payload = buffer.subspan(SIZE);
             return true;
         }
     };

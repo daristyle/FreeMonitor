@@ -18,11 +18,15 @@ KEYFRAME_REQUEST_REPEAT_INTERVAL_MS = { type = "u32", value = 200 }
 SHAPE_REQUEST_REPEAT_INTERVAL_MS = { type = "u32", value = 500 }
 STATS_INTERVAL_MS = { type = "u32", value = 1000 }
 DEVELOPMENT_KEYFRAME_INTERVAL_MS = { type = "u32", value = 1000 }
+DISCOVER_REPEAT_INTERVAL_MS = { type = "u32", value = 250 }
+DISCOVERY_TIME_MS = { type = "u32", value = 1000 }
 MAX_INCOMPLETE_FRAMES = { type = "u32", value = 4 }
 MIN_SHAPE_CACHE_SIZE = { type = "u32", value = 16 }
 BYE_REPEAT_COUNT = { type = "u32", value = 3 }
 MAX_FEC_GROUP_SIZE = { type = "u32", value = 32 }
 MAX_FEC_GROUP_PARITY = { type = "u32", value = 16 }
+MAX_ANNOUNCES_PER_SECOND = { type = "u32", value = 20 }
+MAX_HOST_NAME_SIZE = { type = "u32", value = 64 }
 
 [enums.Codec]
 JPEG = 0
@@ -207,5 +211,24 @@ header = "ControlHeader"
 fields = [
     { name = "reason", type = "u8" },
     { name = "version", type = "u8" },
+    { name = "reserved", type = "u16", default = 0 },
+]
+
+[packets.DISCOVER]
+className = "Discover"
+type = 0x30
+header = "CommonHeader"
+fields = [
+    { name = "nonce", type = "u32" },
+]
+
+[packets.ANNOUNCE]
+className = "Announce"
+type = 0x31
+header = "CommonHeader"
+payload = "MAX_ANNOUNCE_PAYLOAD"
+fields = [
+    { name = "nonce", type = "u32" },
+    { name = "port", type = "u16" },
     { name = "reserved", type = "u16", default = 0 },
 ]

@@ -34,17 +34,19 @@ if(WIN32)
     target_compile_definitions(fm_protocol PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(fm_protocol PRIVATE ws2_32)
 else()
-    target_sources(fm_protocol PRIVATE cpp/src/posix/UDPSocket.cpp)
+    target_sources(fm_protocol PRIVATE cpp/src/posix/NetworkInterfaces.cpp cpp/src/posix/UDPSocket.cpp)
 endif()
 target_sources(fm_protocol PRIVATE
         cpp/src/ControlPackets.cpp
         cpp/src/CursorPackets.cpp
         cpp/src/CursorReceiver.cpp
         cpp/src/CursorShapeCache.cpp
+        cpp/src/DiscoveryPackets.cpp
         cpp/src/EndpointParsing.cpp
         cpp/src/Fragmenter.cpp
         cpp/src/FrameReceiver.cpp
         cpp/src/HeartbeatEcho.cpp
+        cpp/src/HostDiscovery.cpp
         cpp/src/HostSessions.cpp
         cpp/src/PeerTracker.cpp
         cpp/src/Reassembler.cpp
@@ -63,6 +65,7 @@ target_link_libraries(fm_protocol PRIVATE fm_warnings)
 if(ANDROID)
     set_target_properties(fm_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON)
     add_library(freemonitor SHARED cpp/src/android/NativeBridge.cpp)
+    target_include_directories(freemonitor PRIVATE cpp/src)
     target_link_libraries(freemonitor PRIVATE fm_protocol fm_warnings)
 endif()
 
@@ -140,7 +143,8 @@ if(FM_BUILD_HOST)
     )
     target_link_libraries(fm_platform PRIVATE fm_warnings)
 
-    add_library(fm_host STATIC cpp/src/CursorSender.cpp cpp/src/FrameTimingLog.cpp cpp/src/HostOptions.cpp)
+    add_library(fm_host STATIC cpp/src/CursorSender.cpp cpp/src/DiscoveryResponder.cpp cpp/src/FrameTimingLog.cpp
+            cpp/src/HostOptions.cpp cpp/src/RateLimiter.cpp)
     target_include_directories(fm_host
             PUBLIC cpp/include cpp/src
     )
@@ -196,10 +200,14 @@ if(FM_BUILD_TESTS)
             cpp/tests/EndpointParsingTests.cpp
             cpp/tests/HeartbeatEchoTests.cpp
             cpp/tests/ReedSolomonTests.cpp
+            cpp/tests/DiscoveryPacketsTests.cpp
+            cpp/tests/DiscoveryTests.cpp
+            cpp/tests/RateLimiterTests.cpp
     )
     if(NOT WIN32)
         target_sources(fm_tests PRIVATE
                 cpp/tests/FileDescriptorTests.cpp
+                cpp/tests/NetworkInterfacesTests.cpp
                 cpp/tests/HyprlandIPCTests.cpp
                 cpp/tests/HyprlandVirtualDisplayTests.cpp
                 cpp/tests/H264EncoderTests.cpp

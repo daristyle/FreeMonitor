@@ -29,6 +29,8 @@ SPEC_PACKET_SIZES = {
     "Stats": 52,
     "Bye": 32,
     "Reject": 36,
+    "Discover": 28,
+    "Announce": 32,
 }
 
 SPEC_STRUCT_FORMATS = {
@@ -36,6 +38,8 @@ SPEC_STRUCT_FORMATS = {
     "VideoFragment": "!HBBIIIQIHHIBBHQ",
     "CursorPos": "!HBBIIIQIiiBBH",
     "CursorShape": "!HBBIIIQIHHHHHH",
+    "Discover": "!HBBIIIQI",
+    "Announce": "!HBBIIIQIHH",
 }
 
 
@@ -73,7 +77,7 @@ def readSpecConstants():
 
 
 def testSpecConstantsTableIsRead():
-    assert len(readSpecConstants()) == 25
+    assert len(readSpecConstants()) == 30
 
 
 def testConstantsMatchSpec():

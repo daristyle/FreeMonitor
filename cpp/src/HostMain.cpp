@@ -1,6 +1,7 @@
 #include "CaptureSource.hpp"
 #include "CursorSender.hpp"
 #include "CursorSource.hpp"
+#include "DiscoveryResponder.hpp"
 #include "Encoder.hpp"
 #include "FrameTimingLog.hpp"
 #include "HostOptions.hpp"
@@ -37,6 +38,7 @@ namespace {
 
     constexpr std::chrono::milliseconds CAPTURE_TIMEOUT{10};
     constexpr std::chrono::seconds REPORT_INTERVAL{1};
+    constexpr std::chrono::seconds DISCOVERY_RETRY_INTERVAL{5};
     constexpr std::chrono::milliseconds KEYFRAME_INTERVAL{fm::DEVELOPMENT_KEYFRAME_INTERVAL_MS};
     constexpr std::size_t MAX_CONTROL_PACKETS_PER_PASS = 32;
     constexpr std::chrono::milliseconds BYE_WAIT_LIMIT{200};
@@ -113,17 +115,27 @@ namespace {
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
             std::println(stderr,
                          "                       [--fec PERCENT] [--cursor auto|overlay|embedded] [--timing-log FILE]");
+            std::println(stderr, "                       [--name NAME]");
             std::println(stderr, "  --seconds 0 runs until Ctrl+C. --destination streams video in development mode.");
-            std::println(stderr, "  Without --destination, the host waits for a tablet on UDP port {}.", fm::HOST_PORT);
+            std::println(stderr,
+                         "  Without --destination, the host waits for a tablet on UDP port {} (another free port if",
+                         fm::HOST_PORT);
+            std::println(stderr, "    that one is taken) and answers tablets that search on UDP port {}.",
+                         fm::DISCOVERY_PORT);
         } else {
             std::println(stderr, "Usage: FreeMonitorHost [--seconds N] [--quality 1-100] [--size WxH] [--refresh HZ]");
             std::println(stderr, "                       [--position right|left|above|below|X,Y]");
             std::println(stderr, "                       [--encoder auto|nvenc|vaapi|jpeg] [--bitrate MBIT]");
             std::println(stderr,
                          "                       [--fec PERCENT] [--cursor auto|overlay|embedded] [--timing-log FILE]");
-            std::println(stderr, "  --seconds 0 runs until Ctrl+C. The host waits for a tablet on UDP port {}.",
+            std::println(stderr, "                       [--name NAME]");
+            std::println(stderr,
+                         "  --seconds 0 runs until Ctrl+C. The host waits for a tablet on UDP port {} (another free",
                          fm::HOST_PORT);
+            std::println(stderr, "    port if that one is taken) and answers tablets that search on UDP port {}.",
+                         fm::DISCOVERY_PORT);
         }
+        std::println(stderr, "  --name sets the name tablets show when they search (default: this computer's name).");
         std::println(stderr, "  --encoder auto tries NVENC, then VA-API, then JPEG. It is the default.");
         std::println(stderr,
                      "  --bitrate sets the H.264 bitrate in Mbit/s (default 20). --quality sets the JPEG quality.");
@@ -269,10 +281,11 @@ namespace {
         }
     }
 
-    void printTabletReport(const std::optional<fm::TabletReport>& report, std::optional<fm::Stats>& previousStats) {
+    void printTabletReport(const std::optional<fm::TabletReport>& report, std::optional<fm::Stats>& previousStats,
+                           std::uint16_t sessionPort) {
         if (!report) {
             previousStats.reset();
-            std::println("     | waiting for a tablet on UDP port {}", fm::HOST_PORT);
+            std::println("     | waiting for a tablet on UDP port {}", sessionPort);
             return;
         }
         const std::string roundTrip =
@@ -325,14 +338,27 @@ int main(int argumentCount, char** arguments) {
 
     const fm::Endpoint bindTo{fm::ANY_IP_ADDRESS, options->destination ? std::uint16_t{0} : fm::HOST_PORT};
     auto opened = fm::UDPSocket::open(bindTo);
+    if (!opened && !options->destination) {
+        if (auto anyPort = fm::UDPSocket::open(fm::Endpoint{fm::ANY_IP_ADDRESS, 0})) {
+            opened = std::move(anyPort);
+        }
+    }
     if (!opened) {
         std::println(stderr, "Could not open the UDP socket: {}", opened.error().message);
-        if (!options->destination) {
-            std::println(stderr, "Is another FreeMonitor host already using UDP port {}?", fm::HOST_PORT);
-        }
         return 1;
     }
     fm::UDPSocket udpSocket = std::move(*opened);
+    const auto boundTo = udpSocket.localEndpoint();
+    if (!boundTo) {
+        std::println(stderr, "Could not read the UDP socket's port: {}", boundTo.error().message);
+        return 1;
+    }
+    const std::uint16_t sessionPort = boundTo->port;
+    if (!options->destination && sessionPort != fm::HOST_PORT) {
+        std::println("UDP port {} is in use, so the host waits on port {} instead. Tablets that search find it; to",
+                     fm::HOST_PORT, sessionPort);
+        std::println("connect by address, use port {}.", sessionPort);
+    }
     const auto sendBufferSize = udpSocket.setSendBufferSize(SEND_BUFFER_SIZE);
     if (!sendBufferSize || *sendBufferSize < SEND_BUFFER_SIZE) {
         std::println(stderr, "Warning: the send buffer is smaller than {} bytes. Raise net.core.wmem_max.",
@@ -353,8 +379,17 @@ int main(int argumentCount, char** arguments) {
     } else {
         sessions.emplace(controlTransport, sessionEvents, fm::HostOffer{},
                          [&randomDevice] { return static_cast<std::uint32_t>(randomDevice()); });
-        std::println("Waiting for a tablet on UDP port {}.", fm::HOST_PORT);
+        std::println("Waiting for a tablet on UDP port {}.", sessionPort);
     }
+    const std::string hostName = options->hostName ? *options->hostName : fm::localHostName().value_or(std::string());
+    auto startDiscovery = [&]() {
+        auto responder = fm::DiscoveryResponder::open(fm::Endpoint{fm::ANY_IP_ADDRESS, fm::DISCOVERY_PORT}, hostName,
+                                                      sessionPort, static_cast<std::uint32_t>(randomDevice()));
+        if (responder) {
+            (*responder)->start();
+        }
+        return responder;
+    };
 
     std::unique_ptr<fm::FrameTimingLog> timingLog;
     if (options->timingLogPath) {
@@ -475,6 +510,21 @@ int main(int argumentCount, char** arguments) {
     bool cursorLossReported = false;
     int exitCode = 0;
 
+    std::unique_ptr<fm::DiscoveryResponder> discoveryResponder;
+    auto nextDiscoveryAttempt = Clock::time_point::max();
+    if (sessions) {
+        if (auto responder = startDiscovery()) {
+            discoveryResponder = std::move(*responder);
+            std::println("Tablets that search find this host as \"{}\".", discoveryResponder->hostName());
+        } else {
+            std::println(stderr, "Warning: UDP port {} is not available ({}), so tablets cannot find this host by",
+                         fm::DISCOVERY_PORT, responder.error().message);
+            std::println(stderr, "searching. Trying again every {} s. Tablets can still connect to port {} by address.",
+                         DISCOVERY_RETRY_INTERVAL.count(), sessionPort);
+            nextDiscoveryAttempt = Clock::now() + DISCOVERY_RETRY_INTERVAL;
+        }
+    }
+
     fm::CapturedFrame capturedFrame;
     fm::EncodedFrame encodedFrame;
     while (!stopRequested.load() && Clock::now() < deadline) {
@@ -514,6 +564,16 @@ int main(int argumentCount, char** arguments) {
         }
 
         const auto now = Clock::now();
+        if (!discoveryResponder && now >= nextDiscoveryAttempt) {
+            if (auto responder = startDiscovery()) {
+                discoveryResponder = std::move(*responder);
+                nextDiscoveryAttempt = Clock::time_point::max();
+                std::println("UDP port {} is free now, so tablets that search find this host as \"{}\".",
+                             fm::DISCOVERY_PORT, discoveryResponder->hostName());
+            } else {
+                nextDiscoveryAttempt = now + DISCOVERY_RETRY_INTERVAL;
+            }
+        }
         if (now - periodStart >= REPORT_INTERVAL) {
             const double periodSeconds = std::chrono::duration<double>(now - periodStart).count();
             std::println("{:4} fps | frame interval min {:6.2f} avg {:6.2f} max {:6.2f} ms | capture to acquire avg "
@@ -553,7 +613,7 @@ int main(int argumentCount, char** arguments) {
             }
             if (sessions) {
                 const auto report = sessions->report();
-                printTabletReport(report, reportedStats);
+                printTabletReport(report, reportedStats, sessionPort);
                 if (timingLog && report && report->clockSample &&
                     report->clockSample->receivedTime != lastClockSampleTime) {
                     lastClockSampleTime = report->clockSample->receivedTime;

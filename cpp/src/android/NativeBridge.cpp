@@ -1,23 +1,30 @@
 #include "EndpointParsing.hpp"
 #include "FrameReceiver.hpp"
+#include "HostDiscovery.hpp"
 #include "Packets.hpp"
 #include "TabletSession.hpp"
 #include "Timestamp.hpp"
 #include "UDPSocket.hpp"
+#include "posix/NetworkInterfaces.hpp"
 
 #include <jni.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace fm {
     namespace {
         constexpr const char* NATIVE_BRIDGE_CLASS = "io/github/daristyle/freemonitor/NativeBridge";
         constexpr const char* ILLEGAL_STATE_EXCEPTION = "java/lang/IllegalStateException";
+        constexpr const char* BYTE_ARRAY_CLASS = "[B";
         constexpr std::uint32_t DEVELOPMENT_SESSION_ID = 0;
         constexpr jint MAX_PORT = 65535;
         constexpr jint MAX_SCREEN_VALUE = 65535;
@@ -29,6 +36,8 @@ namespace fm {
         constexpr unsigned SHAPE_HEIGHT_SHIFT = 16;
         constexpr unsigned SHAPE_HOTSPOT_X_SHIFT = 32;
         constexpr unsigned SHAPE_HOTSPOT_Y_SHIFT = 48;
+        constexpr unsigned HOST_PORT_SHIFT = 32;
+        constexpr unsigned HOST_VERSION_SHIFT = 48;
 
         FrameReceiver* toReceiver(jlong handle) {
             return reinterpret_cast<FrameReceiver*>(static_cast<std::intptr_t>(handle));
@@ -208,7 +217,81 @@ namespace fm {
             delete toReceiver(handle);
         }
 
-        const std::array<JNINativeMethod, 12> NATIVE_METHODS{{
+        jintArray broadcastAddresses(JNIEnv* environment, jclass) {
+            const auto addresses = ipv4BroadcastAddresses();
+            if (!addresses) {
+                throwIllegalState(environment, addresses.error().message);
+                return nullptr;
+            }
+            std::vector<jint> values(addresses->size());
+            std::ranges::transform(*addresses, values.begin(),
+                                   [](std::uint32_t address) { return static_cast<jint>(address); });
+            const auto count = static_cast<jsize>(values.size());
+            jintArray array = environment->NewIntArray(count);
+            if (array != nullptr) {
+                environment->SetIntArrayRegion(array, 0, count, values.data());
+            }
+            return array;
+        }
+
+        jlong packHost(const DiscoveredHost& host) {
+            return static_cast<jlong>(std::uint64_t{host.endpoint.address} |
+                                      (std::uint64_t{host.endpoint.port} << HOST_PORT_SHIFT) |
+                                      (std::uint64_t{host.version} << HOST_VERSION_SHIFT));
+        }
+
+        jobjectArray searchHosts(JNIEnv* environment, jclass, jintArray addresses, jint port, jint durationMs,
+                                 jlongArray hostInfo) {
+            if (port <= 0 || port > MAX_PORT || durationMs <= 0) {
+                throwIllegalState(environment, "The port must be 1 to 65535 and the duration more than 0 ms");
+                return nullptr;
+            }
+            std::vector<jint> addressValues(static_cast<std::size_t>(environment->GetArrayLength(addresses)));
+            environment->GetIntArrayRegion(addresses, 0, static_cast<jsize>(addressValues.size()),
+                                           addressValues.data());
+            std::vector<Endpoint> targets;
+            for (const jint address : addressValues) {
+                targets.push_back(Endpoint{static_cast<std::uint32_t>(address), static_cast<std::uint16_t>(port)});
+            }
+            std::random_device randomDevice;
+            const DiscoverySearch search{.targets = std::move(targets),
+                                         .nonce = static_cast<std::uint32_t>(randomDevice()),
+                                         .firstSeq = static_cast<std::uint32_t>(randomDevice()),
+                                         .duration = std::chrono::milliseconds(durationMs),
+                                         .repeatInterval = std::chrono::milliseconds(DISCOVER_REPEAT_INTERVAL_MS)};
+            const auto hosts = discoverHosts(search);
+            if (!hosts) {
+                throwIllegalState(environment, hosts.error().message);
+                return nullptr;
+            }
+            const jsize count = std::min(static_cast<jsize>(hosts->size()), environment->GetArrayLength(hostInfo));
+            jclass byteArrayClass = environment->FindClass(BYTE_ARRAY_CLASS);
+            if (byteArrayClass == nullptr) {
+                return nullptr;
+            }
+            jobjectArray names = environment->NewObjectArray(count, byteArrayClass, nullptr);
+            environment->DeleteLocalRef(byteArrayClass);
+            if (names == nullptr) {
+                return nullptr;
+            }
+            std::vector<jlong> info(static_cast<std::size_t>(count));
+            for (jsize i = 0; i < count; ++i) {
+                const DiscoveredHost& host = (*hosts)[static_cast<std::size_t>(i)];
+                info[static_cast<std::size_t>(i)] = packHost(host);
+                const auto nameSize = static_cast<jsize>(host.name.size());
+                jbyteArray name = environment->NewByteArray(nameSize);
+                if (name == nullptr) {
+                    return nullptr;
+                }
+                environment->SetByteArrayRegion(name, 0, nameSize, reinterpret_cast<const jbyte*>(host.name.data()));
+                environment->SetObjectArrayElement(names, i, name);
+                environment->DeleteLocalRef(name);
+            }
+            environment->SetLongArrayRegion(hostInfo, 0, count, info.data());
+            return names;
+        }
+
+        const std::array<JNINativeMethod, 14> NATIVE_METHODS{{
                 {"protocolVersion", "()I", reinterpret_cast<void*>(&protocolVersion)},
                 {"maxFrameSize", "()I", reinterpret_cast<void*>(&maxFrameSize)},
                 {"createReceiver", "(I)J", reinterpret_cast<void*>(&createReceiver)},
@@ -221,6 +304,8 @@ namespace fm {
                 {"cursorState", "(J)J", reinterpret_cast<void*>(&cursorState)},
                 {"cursorShape", "(JJ[I)J", reinterpret_cast<void*>(&cursorShape)},
                 {"destroyReceiver", "(J)V", reinterpret_cast<void*>(&destroyReceiver)},
+                {"broadcastAddresses", "()[I", reinterpret_cast<void*>(&broadcastAddresses)},
+                {"searchHosts", "([III[J)[[B", reinterpret_cast<void*>(&searchHosts)},
         }};
     }
 }

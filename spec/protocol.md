@@ -37,11 +37,11 @@ A receiver silently drops a packet, without replying, when any of these is true:
 - `type` is unknown.
 - Its length does not match what its type requires.
 - A reserved field or bit is not `0`. The `features` field of `HELLO` and `WELCOME` is not a reserved field: receivers ignore unknown bits in it ([7.2](#72-feature-negotiation)).
-- `sessionId` is `0`, except in development mode ([6.6](#66-development-mode)).
+- `sessionId` is `0`, except in development mode ([6.6](#66-development-mode)) and in discovery packets, which always use `0` ([7.5](#75-discovery)).
 
 Dropping an invalid packet must never change the receiver's state.
 
-The one exception to dropping silently: the host answers a `HELLO` whose `version` it does not support with `REJECT` ([6.5](#65-reject-and-version-stability)).
+The two exceptions to dropping silently: the host answers a `HELLO` whose `version` it does not support with `REJECT` ([6.5](#65-reject-and-version-stability)), and it answers a `DISCOVER` of any `version` with `ANNOUNCE` ([7.5](#75-discovery)).
 
 ### 1.5 Constants
 
@@ -51,6 +51,8 @@ The one exception to dropping silently: the host answers a `HELLO` whose `versio
 | `MAX_FRAGMENT_PAYLOAD` | `MAX_PACKET_SIZE` − 48 = 1352 | Frame data per `VIDEO_FRAGMENT` ([4.2](#42-fragment-size)). |
 | `MAX_PARITY_PAYLOAD` | `MAX_PACKET_SIZE` − 48 = 1352 | Parity data per `VIDEO_PARITY` ([7.3](#73-forward-error-correction)). |
 | `MAX_SHAPE_PAYLOAD` | `MAX_PACKET_SIZE` − 40 = 1360 | Pixel data per `CURSOR_SHAPE` ([5.2](#52-cursor_shape)). |
+| `MAX_ANNOUNCE_PAYLOAD` | `MAX_PACKET_SIZE` − 32 = 1368 | Room after the fixed fields of `ANNOUNCE`. The name in it is limited to `MAX_HOST_NAME_SIZE` ([7.5](#75-discovery)). |
+| `MAX_HOST_NAME_SIZE` | 64 | Longest host name in `ANNOUNCE`, in bytes of UTF-8 ([7.5](#75-discovery)). |
 | `MAX_FRAME_SIZE` | 4,194,304 (4 MiB) | Largest video frame ([4.2](#42-fragment-size)). |
 | `HOST_PORT` | 50500 | Default UDP port of the host. |
 | `DISCOVERY_PORT` | 50501 | Fixed UDP port for discovery ([7.5](#75-discovery)). |
@@ -72,6 +74,8 @@ Times, in milliseconds:
 | `SHAPE_REQUEST_REPEAT_INTERVAL_MS` | 500 | Repeat interval of `SHAPE_REQUEST` until the shape arrives ([6.4](#64-messages)). |
 | `STATS_INTERVAL_MS` | 1000 | Interval between `STATS` packets ([6.4](#64-messages)). |
 | `DEVELOPMENT_KEYFRAME_INTERVAL_MS` | 1000 | Keyframe interval in development mode ([6.6](#66-development-mode)). |
+| `DISCOVER_REPEAT_INTERVAL_MS` | 250 | Interval between the copies of `DISCOVER` in one search ([7.5](#75-discovery)). |
+| `DISCOVERY_TIME_MS` | 1000 | How long a search lasts ([7.5](#75-discovery)). |
 
 Counts:
 
@@ -82,6 +86,7 @@ Counts:
 | `BYE_REPEAT_COUNT` | 3 | How many times `BYE` is sent ([6.3](#63-session)). |
 | `MAX_FEC_GROUP_SIZE` | 32 | Most fragments in one parity group ([7.3](#73-forward-error-correction)). |
 | `MAX_FEC_GROUP_PARITY` | 16 | Most parity packets for one parity group ([7.3](#73-forward-error-correction)). |
+| `MAX_ANNOUNCES_PER_SECOND` | 20 | Most `ANNOUNCE` packets a host sends per second ([7.5](#75-discovery)). |
 
 ## 2. Common header
 
@@ -134,6 +139,8 @@ Informative Python `struct` format: `"!HBBIIIQ"`. The packet schema is the autho
 | `0x26` | `STATS`            | [6.4](#64-messages) |
 | `0x27` | `BYE`              | [6.4](#64-messages) |
 | `0x28` | `REJECT`           | [6.5](#65-reject-and-version-stability) |
+| `0x30` | `DISCOVER`         | [7.5](#75-discovery) |
+| `0x31` | `ANNOUNCE`         | [7.5](#75-discovery) |
 
 Ranges: `0x01–0x0F` video, `0x10–0x1F` cursor, `0x20–0x2F` control, `0x30–0x3F` discovery ([7.5](#75-discovery)). All other values are invalid.
 
@@ -416,7 +423,8 @@ The host sends at most one `REJECT` per `HELLO` it receives. A tablet that recei
 **Version stability.** So that a host and a tablet with different protocol versions can still tell each other that they are incompatible, these are frozen and will never change in any version:
 
 - the offsets, sizes and meanings of the common header fields `magic`, `version`, `type`, `sessionId`, `seq` and `timestampUs` ([2](#2-common-header)), which include the `type` and `sessionId` of every `HELLO`;
-- the whole `REJECT` packet.
+- the whole `REJECT` packet;
+- the whole `DISCOVER` and `ANNOUNCE` packets ([7.5](#75-discovery)), so a tablet can find hosts of every version and tell the user which ones it cannot use.
 
 `headerReserved` is a reserved field like any other ([7.1](#71-rules-for-changing-the-protocol)): a later revision may give it a meaning, used only after the peers agreed on it through `features` ([7.2](#72-feature-negotiation)). `HELLO` and `REJECT` always carry `0` in it.
 
@@ -519,7 +527,38 @@ Planned as protocol `version` 2:
 
 ### 7.5 Discovery
 
-Planned packet types `0x30` `DISCOVER` (tablet broadcast) and `0x31` `ANNOUNCE` (host reply with its name and port), on the fixed port `DISCOVERY_PORT`. They are sent before any session exists, so they have no control header, use `sessionId` = `0`, and are never encrypted. Their layout will be specified with the feature.
+A tablet finds the hosts on its network by broadcasting `DISCOVER`. Every host that receives it answers with `ANNOUNCE`, which carries the host's name and the port where it accepts `HELLO`. Both are sent before any session exists, so they have no control header, use `sessionId` = `0`, and are never encrypted. Hosts listen on the fixed port `DISCOVERY_PORT`. Both packets are frozen in every protocol version ([6.5](#65-reject-and-version-stability)).
+
+**`DISCOVER` (0x30)**: tablet → broadcast to `DISCOVERY_PORT`, unreliable. Total 28 bytes.
+
+| Offset | Field   | Type | Description |
+|-------:|---------|------|-------------|
+| 24     | `nonce` | u32  | Random number chosen for each search. Every copy in one search carries the same one. |
+
+Informative Python `struct` format, header included: `"!HBBIIIQI"`.
+
+**`ANNOUNCE` (0x31)**: host → the address and port the `DISCOVER` came from, unreliable. 32 bytes plus the name.
+
+| Offset | Field      | Type | Description |
+|-------:|------------|------|-------------|
+| 24     | `nonce`    | u32  | Copied from the `DISCOVER`. |
+| 28     | `port`     | u16  | UDP port where the host accepts `HELLO`, normally `HOST_PORT`. Never `0`. |
+| 30     | `reserved` | u16  | Must be `0`. |
+| 32     | name       | —    | Name of the host to show the user, in UTF-8, 1 to `MAX_HOST_NAME_SIZE` bytes, without a terminating zero. It fills the rest of the packet. |
+
+Informative Python `struct` format of the fixed part, header included: `"!HBBIIIQIHH"`. Its `version` is the host's highest supported protocol version.
+
+Tablet:
+- Sends `DISCOVER` to `255.255.255.255` and to the broadcast address of every IPv4 network it is connected to, on port `DISCOVERY_PORT`, all from one socket. Some systems send `255.255.255.255` only on their default network, so the per-network addresses also reach hosts on other networks, for example over USB tethering.
+- Repeats the copies every `DISCOVER_REPEAT_INTERVAL_MS` and collects answers until `DISCOVERY_TIME_MS` after the first copy, because any copy or answer can be lost.
+- Keeps an `ANNOUNCE` only if its `nonce` matches the search. The host's address is the IPv4 source address of the `ANNOUNCE`, and its port is the `port` field. Several answers from the same address and port are one host.
+- Accepts an `ANNOUNCE` of any `version`. A host whose `version` the tablet does not support is shown as incompatible, because it would answer a `HELLO` with `REJECT` reason `1`.
+- Drops an `ANNOUNCE` whose `sessionId` or `reserved` is not `0`, whose `port` is `0`, or whose name is empty or longer than `MAX_HOST_NAME_SIZE`.
+
+Host:
+- Listens on `DISCOVERY_PORT` while it accepts sessions. In development mode ([6.6](#66-development-mode)) it does not.
+- Answers every valid `DISCOVER` with one `ANNOUNCE` to the address and port it came from. A `DISCOVER` is valid when it is exactly 28 bytes and its `magic`, `type`, `sessionId` and `headerReserved` follow the rules; its `version` does not matter.
+- Sends at most `MAX_ANNOUNCES_PER_SECOND` `ANNOUNCE` packets per second in total and drops the `DISCOVER` packets beyond that. An `ANNOUNCE` is larger than a `DISCOVER`, so without a limit a `DISCOVER` with a forged source address could make the host flood another device.
 
 ### 7.6 Out of scope
 
@@ -529,6 +568,7 @@ The local control port between the host and the tray app is not part of this pro
 
 Version 1 has **no authentication and no encryption**. Anyone on the same network can:
 
+- find the host and read its name with a `DISCOVER` ([7.5](#75-discovery));
 - watch the stream by capturing its packets;
 - send forged packets, including a `REJECT` that stops a tablet from connecting;
 - take over the host with their own `HELLO`, which ends the current session ([6.3](#63-session));

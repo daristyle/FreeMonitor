@@ -1,6 +1,7 @@
 #include "HostOptions.hpp"
 
 #include "EndpointParsing.hpp"
+#include "Packets.hpp"
 
 #include <array>
 #include <charconv>
@@ -117,7 +118,7 @@ namespace fm {
             const std::string_view option = arguments[i];
             if (option != "--seconds" && option != "--quality" && option != "--destination" && option != "--size" &&
                 option != "--refresh" && option != "--position" && option != "--timing-log" && option != "--encoder" &&
-                option != "--bitrate" && option != "--fec" && option != "--cursor") {
+                option != "--bitrate" && option != "--fec" && option != "--cursor" && option != "--name") {
                 return invalidOption("Unknown option " + std::string(option));
             }
             if (i + 1 >= arguments.size()) {
@@ -180,6 +181,11 @@ namespace fm {
                     return invalidOption("--cursor must be auto, overlay or embedded");
                 }
                 options.cursor = *choice;
+            } else if (option == "--name") {
+                if (value.empty() || value.size() > MAX_HOST_NAME_SIZE) {
+                    return invalidOption("--name must be 1 to 64 bytes long");
+                }
+                options.hostName = std::string(value);
             } else {
                 if (!developmentModeAllowed) {
                     return invalidOption("--destination is development mode, which a release build does not have");

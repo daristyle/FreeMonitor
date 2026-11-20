@@ -37,6 +37,7 @@ namespace fm {
         DisplayMode displayMode{.width = DEFAULT_DISPLAY_WIDTH, .height = DEFAULT_DISPLAY_HEIGHT};
         std::optional<Endpoint> destination;
         std::optional<std::string> timingLogPath;
+        std::optional<std::string> hostName;
     };
 
     Result<HostOptions> parseHostOptions(std::span<const std::string_view> arguments, bool developmentModeAllowed);

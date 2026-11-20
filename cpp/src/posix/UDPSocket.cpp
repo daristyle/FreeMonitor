@@ -18,6 +18,8 @@
 
 namespace fm {
     namespace {
+        constexpr std::size_t HOST_NAME_BUFFER_SIZE = 256;
+
         int nativeHandle(std::uintptr_t socketHandle) {
             return static_cast<int>(socketHandle);
         }
@@ -151,6 +153,14 @@ namespace fm {
         return setBufferSize(nativeHandle(socketHandle), SO_SNDBUF, bytes, "setsockopt(SO_SNDBUF)");
     }
 
+    Result<> UDPSocket::enableBroadcast() {
+        const int enabled = 1;
+        if (::setsockopt(nativeHandle(socketHandle), SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled)) != 0) {
+            return std::unexpected(systemError("setsockopt(SO_BROADCAST)"));
+        }
+        return {};
+    }
+
     SendStatus UDPSocket::sendTo(std::span<const std::uint8_t> data, const Endpoint& to) noexcept {
         const sockaddr_in address = toSockaddr(to);
         const ssize_t sent = ::sendto(nativeHandle(socketHandle), data.data(), data.size(), 0,
@@ -181,5 +191,14 @@ namespace fm {
             return {errno == EINTR ? ReceiveStatus::NO_DATAGRAM : ReceiveStatus::RECEIVE_FAILED, 0};
         }
         return receiveNow(handle, buffer, from);
+    }
+
+    Result<std::string> localHostName() {
+        std::array<char, HOST_NAME_BUFFER_SIZE> name{};
+        if (::gethostname(name.data(), name.size()) != 0) {
+            return std::unexpected(systemError("gethostname"));
+        }
+        name.back() = '\0';
+        return std::string(name.data());
     }
 }

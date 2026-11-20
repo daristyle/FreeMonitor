@@ -266,6 +266,10 @@ namespace {
                 return rewrite<fm::Bye>(bytes);
             case fm::PacketType::REJECT:
                 return rewrite<fm::Reject>(bytes);
+            case fm::PacketType::DISCOVER:
+                return rewrite<fm::Discover>(bytes);
+            case fm::PacketType::ANNOUNCE:
+                return rewrite<fm::Announce>(bytes);
         }
         return std::nullopt;
     }

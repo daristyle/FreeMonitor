@@ -5,12 +5,15 @@
 #include <mswsock.h>
 #include <ws2tcpip.h>
 
+#include <array>
 #include <climits>
 #include <string>
 #include <system_error>
 
 namespace fm {
     namespace {
+        constexpr DWORD HOST_NAME_BUFFER_SIZE = 256;
+
         SOCKET nativeHandle(std::uintptr_t socketHandle) {
             return static_cast<SOCKET>(socketHandle);
         }
@@ -153,6 +156,15 @@ namespace fm {
         return setBufferSize(nativeHandle(socketHandle), SO_SNDBUF, bytes, "setsockopt(SO_SNDBUF)");
     }
 
+    Result<> UDPSocket::enableBroadcast() {
+        const BOOL enabled = TRUE;
+        if (::setsockopt(nativeHandle(socketHandle), SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&enabled),
+                         sizeof(enabled)) != 0) {
+            return std::unexpected(lastSystemError("setsockopt(SO_BROADCAST)"));
+        }
+        return {};
+    }
+
     SendStatus UDPSocket::sendTo(std::span<const std::uint8_t> data, const Endpoint& to) noexcept {
         if (data.size() > INT_MAX || to.port == 0) {
             return SendStatus::SEND_FAILED;
@@ -188,5 +200,21 @@ namespace fm {
             return {ReceiveStatus::RECEIVE_FAILED, 0};
         }
         return receiveNow(handle, buffer, from);
+    }
+
+    Result<std::string> localHostName() {
+        std::array<wchar_t, HOST_NAME_BUFFER_SIZE> wideName{};
+        DWORD length = HOST_NAME_BUFFER_SIZE;
+        if (!::GetComputerNameExW(ComputerNamePhysicalDnsHostname, wideName.data(), &length)) {
+            return std::unexpected(systemError("GetComputerNameExW", static_cast<int>(::GetLastError())));
+        }
+        const int wideLength = static_cast<int>(length);
+        const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, wideName.data(), wideLength, nullptr, 0, nullptr, nullptr);
+        if (bytes <= 0) {
+            return std::unexpected(systemError("WideCharToMultiByte", static_cast<int>(::GetLastError())));
+        }
+        std::string name(static_cast<std::size_t>(bytes), '\0');
+        ::WideCharToMultiByte(CP_UTF8, 0, wideName.data(), wideLength, name.data(), bytes, nullptr, nullptr);
+        return name;
     }
 }

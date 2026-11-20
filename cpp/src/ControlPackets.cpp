@@ -31,6 +31,8 @@ namespace fm {
                 case PacketType::VIDEO_PARITY:
                 case PacketType::CURSOR_POS:
                 case PacketType::CURSOR_SHAPE:
+                case PacketType::DISCOVER:
+                case PacketType::ANNOUNCE:
                     break;
             }
             return 0;

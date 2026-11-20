@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <utility>
 
 namespace fm {
@@ -77,9 +78,12 @@ namespace fm {
         Result<Endpoint> localEndpoint() const;
         Result<int> setReceiveBufferSize(int bytes);
         Result<int> setSendBufferSize(int bytes);
+        Result<> enableBroadcast();
 
         SendStatus sendTo(std::span<const std::uint8_t> data, const Endpoint& to) noexcept;
         ReceiveResult receiveFrom(std::span<std::uint8_t> buffer, Endpoint& from,
                                   std::chrono::milliseconds timeout) noexcept;
     };
+
+    Result<std::string> localHostName();
 }

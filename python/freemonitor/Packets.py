@@ -22,14 +22,19 @@ KEYFRAME_REQUEST_REPEAT_INTERVAL_MS = 200
 SHAPE_REQUEST_REPEAT_INTERVAL_MS = 500
 STATS_INTERVAL_MS = 1000
 DEVELOPMENT_KEYFRAME_INTERVAL_MS = 1000
+DISCOVER_REPEAT_INTERVAL_MS = 250
+DISCOVERY_TIME_MS = 1000
 MAX_INCOMPLETE_FRAMES = 4
 MIN_SHAPE_CACHE_SIZE = 16
 BYE_REPEAT_COUNT = 3
 MAX_FEC_GROUP_SIZE = 32
 MAX_FEC_GROUP_PARITY = 16
+MAX_ANNOUNCES_PER_SECOND = 20
+MAX_HOST_NAME_SIZE = 64
 MAX_FRAGMENT_PAYLOAD = 1352
 MAX_PARITY_PAYLOAD = 1352
 MAX_SHAPE_PAYLOAD = 1360
+MAX_ANNOUNCE_PAYLOAD = 1368
 
 
 class PacketType(IntEnum):
@@ -46,6 +51,8 @@ class PacketType(IntEnum):
     STATS = 0x26
     BYE = 0x27
     REJECT = 0x28
+    DISCOVER = 0x30
+    ANNOUNCE = 0x31
 
 
 class Codec(IntEnum):
@@ -636,4 +643,73 @@ class Reject:
             CommonHeader(*values[0:7]),
             ControlHeader(*values[7:9]),
             *values[9:],
+        )
+
+
+@dataclass
+class Discover:
+    SIZE: ClassVar[int] = 28
+    FORMAT: ClassVar[struct.Struct] = struct.Struct("!HBBIIIQI")
+
+    commonHeader: CommonHeader = field(default_factory=lambda: CommonHeader(type=PacketType.DISCOVER))
+    nonce: int = 0
+
+    def pack(self) -> bytes:
+        return self.FORMAT.pack(
+            self.commonHeader.magic,
+            self.commonHeader.version,
+            self.commonHeader.type,
+            self.commonHeader.sessionId,
+            self.commonHeader.seq,
+            self.commonHeader.headerReserved,
+            self.commonHeader.timestampUs,
+            self.nonce,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> Discover:
+        if len(data) < cls.SIZE:
+            raise ValueError(f"Discover needs {cls.SIZE} bytes, got {len(data)}")
+        values = cls.FORMAT.unpack_from(data)
+        return cls(
+            CommonHeader(*values[0:7]),
+            *values[7:],
+        )
+
+
+@dataclass
+class Announce:
+    SIZE: ClassVar[int] = 32
+    FORMAT: ClassVar[struct.Struct] = struct.Struct("!HBBIIIQIHH")
+
+    commonHeader: CommonHeader = field(default_factory=lambda: CommonHeader(type=PacketType.ANNOUNCE))
+    nonce: int = 0
+    port: int = 0
+    reserved: int = 0
+    payload: bytes = b""
+
+    def pack(self) -> bytes:
+        packed = self.FORMAT.pack(
+            self.commonHeader.magic,
+            self.commonHeader.version,
+            self.commonHeader.type,
+            self.commonHeader.sessionId,
+            self.commonHeader.seq,
+            self.commonHeader.headerReserved,
+            self.commonHeader.timestampUs,
+            self.nonce,
+            self.port,
+            self.reserved,
+        )
+        return packed + self.payload
+
+    @classmethod
+    def unpack(cls, data: bytes) -> Announce:
+        if len(data) < cls.SIZE:
+            raise ValueError(f"Announce needs {cls.SIZE} bytes, got {len(data)}")
+        values = cls.FORMAT.unpack_from(data)
+        return cls(
+            CommonHeader(*values[0:7]),
+            *values[7:],
+            payload=bytes(data[cls.SIZE :]),
         )

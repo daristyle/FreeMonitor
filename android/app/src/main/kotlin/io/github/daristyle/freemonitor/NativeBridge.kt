@@ -54,4 +54,15 @@ object NativeBridge {
 
     @JvmStatic
     external fun destroyReceiver(handle: Long)
+
+    @JvmStatic
+    external fun broadcastAddresses(): IntArray
+
+    @JvmStatic
+    external fun searchHosts(
+        addresses: IntArray,
+        port: Int,
+        durationMs: Int,
+        hostInfo: LongArray,
+    ): Array<ByteArray>
 }

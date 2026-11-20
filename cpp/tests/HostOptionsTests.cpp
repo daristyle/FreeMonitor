@@ -1,4 +1,5 @@
 #include "HostOptions.hpp"
+#include "Packets.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -8,6 +9,8 @@
 #include <vector>
 
 namespace {
+    constexpr std::string_view LONG_NAME = "a name that is one byte longer than the sixty-four bytes allowed!";
+
     fm::Result<fm::HostOptions> parse(std::vector<std::string_view> arguments, bool developmentModeAllowed = true) {
         return fm::parseHostOptions(arguments, developmentModeAllowed);
     }
@@ -85,6 +88,14 @@ TEST_CASE("parseHostOptions reads a relative position") {
     CHECK(options->displayMode.placement == placement);
 }
 
+TEST_CASE("parseHostOptions reads the name tablets see when they search") {
+    CHECK_FALSE(parse({})->hostName);
+    const auto options = parse({"--name", "Living room PC"});
+    REQUIRE(options);
+    CHECK(options->hostName == "Living room PC");
+    CHECK(parse({"--name", std::string_view(LONG_NAME).substr(0, fm::MAX_HOST_NAME_SIZE)}));
+}
+
 TEST_CASE("parseHostOptions reads every option") {
     const auto options = parse({"--seconds", "0", "--quality", "55", "--destination", "10.0.0.2:50500", "--timing-log",
                                 "runs/host-timing.csv"});
@@ -116,7 +127,9 @@ TEST_CASE("parseHostOptions rejects bad arguments") {
             std::vector<std::string_view>{"--bitrate", "fast"}, std::vector<std::string_view>{"--fec"},
             std::vector<std::string_view>{"--fec", "101"}, std::vector<std::string_view>{"--fec", "-1"},
             std::vector<std::string_view>{"--fec", "lots"}, std::vector<std::string_view>{"--cursor"},
-            std::vector<std::string_view>{"--cursor", "hidden"}, std::vector<std::string_view>{"--cursor", "Overlay"});
+            std::vector<std::string_view>{"--cursor", "hidden"}, std::vector<std::string_view>{"--cursor", "Overlay"},
+            std::vector<std::string_view>{"--name"}, std::vector<std::string_view>{"--name", ""},
+            std::vector<std::string_view>{"--name", std::string_view(LONG_NAME)});
     const auto options = parse(arguments);
     REQUIRE_FALSE(options);
     CHECK(options.error().code == fm::ErrorCode::INVALID_ARGUMENT);

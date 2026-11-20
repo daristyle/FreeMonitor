@@ -205,3 +205,18 @@ TEST_CASE("buffer sizes can be raised") {
         CHECK(*largeBytes > *smallBytes);
     }
 }
+
+TEST_CASE("a socket may send to the broadcast address only after enableBroadcast") {
+    auto udpSocket = fm::UDPSocket::open(fm::Endpoint{fm::ANY_IP_ADDRESS, 0});
+    REQUIRE(udpSocket);
+    const std::array<std::uint8_t, 4> data{1, 2, 3, 4};
+    CHECK(udpSocket->sendTo(data, fm::Endpoint{fm::makeIPAddress(255, 255, 255, 255), 9}) ==
+          fm::SendStatus::SEND_FAILED);
+    CHECK(udpSocket->enableBroadcast());
+}
+
+TEST_CASE("the local host name is not empty") {
+    const auto name = fm::localHostName();
+    REQUIRE(name);
+    CHECK_FALSE(name->empty());
+}

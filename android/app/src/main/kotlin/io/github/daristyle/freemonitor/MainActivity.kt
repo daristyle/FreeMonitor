@@ -2,7 +2,9 @@ package io.github.daristyle.freemonitor
 
 import android.app.Activity
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
@@ -14,10 +16,13 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import java.io.File
 import java.io.IOException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 class MainActivity :
@@ -27,11 +32,19 @@ class MainActivity :
     private lateinit var waitingView: TextView
     private lateinit var statusView: TextView
     private lateinit var cursorView: CursorView
+    private lateinit var hostListView: HostListView
     private var surfaceView: SurfaceView? = null
     private var receiver: FrameReceiver? = null
     private var timingLog: FrameTimingLog? = null
     private var renderer: FrameRenderer? = null
     private var sessionHost: String? = null
+    private var development = false
+    private val searchExecutor = Executors.newSingleThreadExecutor()
+    private val hostSearches = LatestSearch<Pair<List<DiscoveredHost>, String?>>(searchExecutor) { container.post(it) }
+    private val noAnswerWatch = NoAnswerWatch(NO_ANSWER_SEARCH_DELAY_MS)
+    private var hostListOpenedByWatch = false
+    private val closeListOnBack by lazy { OnBackInvokedCallback { closeHostList() } }
+    private var closeListOnBackRegistered = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +65,7 @@ class MainActivity :
                 setPadding(padding, padding, padding, padding)
             }
         cursorView = CursorView(this)
+        hostListView = HostListView(this, ::connectTo, ::startSearch, ::closeHostList)
         container =
             FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
@@ -61,20 +75,47 @@ class MainActivity :
                     statusView,
                     FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.START),
                 )
+                addView(hostListView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             }
         setContentView(container)
-        container.setOnClickListener { receiver?.reconnect() }
-        sessionHost = chooseSessionHost()
+        container.setOnClickListener { reconnect() }
+        container.setOnLongClickListener {
+            openHostList(notice = null, openedByWatch = false)
+            true
+        }
+        development = intent.getBooleanExtra(DEVELOPMENT_EXTRA, false)
+        sessionHost = if (development) null else chooseSessionHost()
         addSurfaceView()
         window.insetsController?.let { controller ->
             controller.hide(WindowInsets.Type.systemBars())
             controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         showWaiting()
+        if (!development && sessionHost == null) {
+            openHostList(notice = null, openedByWatch = false)
+        }
+    }
+
+    override fun onDestroy() {
+        searchExecutor.shutdown()
+        super.onDestroy()
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+    override fun onBackPressed() {
+        if (hostListView.closesOnBack) {
+            closeHostList()
+        } else {
+            super.onBackPressed()
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         val host = sessionHost
+        if (host == null && !development) {
+            return
+        }
+        noAnswerWatch.reset()
         val newReceiver =
             try {
                 if (host == null) FrameReceiver.development(RECEIVE_PORT) else openSessionReceiver(host)
@@ -123,12 +164,93 @@ class MainActivity :
     }
 
     private fun chooseSessionHost(): String? {
-        if (intent.getBooleanExtra(DEVELOPMENT_EXTRA, false)) {
-            return null
-        }
         val requested = intent.getStringExtra(HOST_EXTRA)?.trim()?.takeIf { it.isNotEmpty() }
         val host = requested ?: getPreferences(MODE_PRIVATE).getString(HOST_PREFERENCE, null)
         return host?.let { if (':' in it) it else "$it:$HOST_PORT" }
+    }
+
+    private fun reconnect() {
+        noAnswerWatch.reset()
+        receiver?.reconnect()
+    }
+
+    private fun openHostList(
+        notice: String?,
+        openedByWatch: Boolean,
+    ) {
+        hostListOpenedByWatch = openedByWatch
+        hostListView.open(notice, closable = development || sessionHost != null)
+        updateBackHandling()
+        startSearch()
+    }
+
+    private fun closeHostList() {
+        hostSearches.cancel()
+        hostListOpenedByWatch = false
+        hostListView.close()
+        updateBackHandling()
+    }
+
+    private fun updateBackHandling() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            return
+        }
+        val wanted = hostListView.closesOnBack
+        if (wanted == closeListOnBackRegistered) {
+            return
+        }
+        if (wanted) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                closeListOnBack,
+            )
+        } else {
+            onBackInvokedDispatcher.unregisterOnBackInvokedCallback(closeListOnBack)
+        }
+        closeListOnBackRegistered = wanted
+    }
+
+    private fun startSearch() {
+        hostListView.showSearching()
+        hostSearches.start(::runHostSearch, ::showSearchResult)
+    }
+
+    private fun runHostSearch(): Pair<List<DiscoveredHost>, String?> =
+        try {
+            HostSearch.search(TetheringSubnets.find(applicationContext)) to null
+        } catch (error: IllegalStateException) {
+            emptyList<DiscoveredHost>() to error.message.orEmpty()
+        }
+
+    private fun showSearchResult(result: Pair<List<DiscoveredHost>, String?>) {
+        if (isDestroyed) {
+            return
+        }
+        val (hosts, failure) = result
+        if (failure != null) {
+            hostListView.showFailure(failure)
+        } else {
+            hostListView.showHosts(hosts, NativeBridge.protocolVersion())
+        }
+    }
+
+    private fun connectTo(host: DiscoveredHost) {
+        closeHostList()
+        development = false
+        sessionHost = host.endpoint
+        showWaiting()
+        waitingView.visibility = TextView.VISIBLE
+        statusView.text = ""
+        replaceSurfaceView(surfaceView)
+    }
+
+    private fun watchConnection(session: SessionStatus) {
+        if (session.state == SessionState.CONNECTED && hostListOpenedByWatch) {
+            closeHostList()
+        }
+        if (noAnswerWatch.shouldSearch(session.state, SystemClock.elapsedRealtime()) && !hostListView.isOpen) {
+            openHostList(getString(R.string.host_no_answer, sessionHost.orEmpty()), openedByWatch = true)
+        }
     }
 
     private fun saveHost(host: String) {
@@ -209,6 +331,10 @@ class MainActivity :
             waitingView.text = getString(R.string.session_connecting, host)
             return
         }
+        if (!development) {
+            waitingView.text = getString(R.string.app_name)
+            return
+        }
         val address = NetworkAddress.localIPAddress(this) ?: getString(R.string.unknown_address)
         waitingView.text = getString(R.string.waiting_for_host, address, RECEIVE_PORT)
     }
@@ -216,6 +342,7 @@ class MainActivity :
     private fun onRenderStatus(status: RenderStatus) {
         statusView.post {
             val session = status.session
+            session?.let(::watchConnection)
             val sinceLastFrame = status.millisecondsSinceLastFrame
             val showingVideo =
                 sinceLastFrame != null &&
@@ -275,6 +402,7 @@ class MainActivity :
         const val DEFAULT_REFRESH_HZ = 60f
         const val MICROSECONDS_PER_MILLISECOND = 1000f
         const val NO_FRAMES_TIMEOUT_MS = 3000L
+        const val NO_ANSWER_SEARCH_DELAY_MS = 3000L
         const val WAITING_TEXT_SIZE_SP = 28f
         const val STATUS_TEXT_SIZE_SP = 12f
         const val STATUS_ALPHA = 0.6f
