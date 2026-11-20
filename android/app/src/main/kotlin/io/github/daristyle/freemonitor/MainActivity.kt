@@ -86,6 +86,7 @@ class MainActivity :
         development = intent.getBooleanExtra(DEVELOPMENT_EXTRA, false)
         sessionHost = if (development) null else chooseSessionHost()
         addSurfaceView()
+        window.setDecorFitsSystemWindows(false)
         window.insetsController?.let { controller ->
             controller.hide(WindowInsets.Type.systemBars())
             controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
